@@ -1,0 +1,14 @@
+{
+  "key.farmhelperfabric.toggle_macro": "Toggle Macro",
+  "key.farmhelperfabric.start_macro": "Start Macro",
+  "key.farmhelperfabric.stop_macro": "Stop Macro",
+  "key.farmhelperfabric.open_menu": "Open FarmHelper Menu",
+  "key.farmhelperfabric.test_failsafe": "Trigger Test Failsafe",
+  "key.farmhelperfabric.freelook": "Toggle Freelook",
+  "key.farmhelperfabric.cancel_failsafe": "Cancel Failsafe",
+  "key.farmhelperfabric.toggle_ungrab_mouse": "Toggle Ungrab Mouse",
+  "key.farmhelperfabric.plot_cleaning_helper": "Toggle Plot Cleaning Helper",
+  "key.farmhelperfabric.trigger_pests_destroyer": "Trigger Pests Destroyer",
+  "key.farmhelperfabric.tp_infested_plot": "Teleport To Infested Plot",
+  "key.categories.farmhelperfabric.main": "FarmHelper Fabric"
+}

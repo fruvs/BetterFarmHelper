@@ -1,0 +1,22 @@
+{
+  "required": true,
+  "package": "com.jelly.farmhelper.fabric.mixin.client",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "CameraFreelookMixin",
+    "ClientConnectionSendMixin",
+    "ClientPlayerEntityMotionMixin",
+    "ClientPlayNetworkHandlerMixin",
+    "ClientPlayerInteractionManagerMixin",
+    "EntityFreelookMixin",
+    "HandledScreenInputMixin",
+    "HandledScreenRenderMixin",
+    "KeyBindingAccessor",
+    "MouseFreelookMixin",
+    "ScreenRenderMixin",
+    "SoundManagerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
