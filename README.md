@@ -1,4 +1,6 @@
 # FarmHelper Fabric (1.21.11)
+## everything is still work in progress
+  - expect bugs expect things not to work, general farming works fine  
 
 Fabric reimplementation workspace for migrating FarmHelper v2 (legacy 1.8.9 Forge) to modern Minecraft.
 
