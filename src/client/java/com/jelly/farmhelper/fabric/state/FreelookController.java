@@ -14,6 +14,7 @@ public final class FreelookController {
     private float cameraPitch;
     private float cameraPrevYaw;
     private float cameraPrevPitch;
+    private float distance = 4.0f;
     private FreelookController() {
     }
 
@@ -30,6 +31,7 @@ public final class FreelookController {
             if (!active) {
                 previousPerspective = client.options.getPerspective();
                 syncFromPlayer(client.player);
+                distance = 4.0f;
             }
             client.options.setPerspective(Perspective.THIRD_PERSON_BACK);
             active = true;
@@ -61,7 +63,15 @@ public final class FreelookController {
         cameraPrevPitch = cameraPitch;
         cameraYaw += (float) (deltaX * 0.15f);
         cameraPitch += (float) (deltaY * 0.15f);
+        cameraYaw = MathHelper.wrapDegrees(cameraYaw);
         cameraPitch = MathHelper.clamp(cameraPitch, -90.0f, 90.0f);
+    }
+
+    public void adjustDistance(double scrollDelta) {
+        if (!active || scrollDelta == 0.0) {
+            return;
+        }
+        distance = MathHelper.clamp(distance - (float) scrollDelta, 1.0f, 20.0f);
     }
 
     public boolean isActive() {
@@ -82,6 +92,10 @@ public final class FreelookController {
 
     public float getCameraPrevPitch() {
         return cameraPrevPitch;
+    }
+
+    public float getDistance() {
+        return distance;
     }
 
     public void applyModelPose(MinecraftClient client) {

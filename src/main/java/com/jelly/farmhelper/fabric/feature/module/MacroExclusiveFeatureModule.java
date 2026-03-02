@@ -140,4 +140,12 @@ public abstract class MacroExclusiveFeatureModule extends AbstractFeatureModule 
     protected void queueSetFreelook(boolean enabled, long tick) {
         FarmHelperFabric.getClientActionQueue().enqueueSetFreelookMode(enabled, tick);
     }
+
+    protected void queueSetUseKey(boolean enabled, long tick) {
+        FarmHelperFabric.getClientActionQueue().enqueueSetUseKey(enabled, tick);
+    }
+
+    protected void queueTapAttackKey(long tick) {
+        FarmHelperFabric.getClientActionQueue().enqueueTapAttackKey(tick);
+    }
 }

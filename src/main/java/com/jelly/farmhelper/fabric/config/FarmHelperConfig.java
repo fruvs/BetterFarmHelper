@@ -167,6 +167,8 @@ public class FarmHelperConfig {
     public int pestsDestroyerOnTrackStuckMs = 7000;
     public float pestsDestroyerOnTrackRadius = 8f;
     public int pestsDestroyerOnTrackFov = 95;
+    public float pestsAimDeadzoneYaw = 4.5f;
+    public float pestsAimDeadzonePitch = 3.0f;
     public boolean pestsTracers = true;
     public boolean pestsHighlightBox = true;
     public int pestsTracerColor = 0xAB00FFD9;

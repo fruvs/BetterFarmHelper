@@ -2,7 +2,9 @@ package com.jelly.farmhelper.fabric.automation;
 
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.tooltip.TooltipType;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.text.Text;
 
@@ -125,57 +127,20 @@ public class GuiDecisionEngine {
         }
     }
 
+    /**
+     * Appends tooltip text from an ItemStack using the 1.21 tooltip API directly.
+     * The old reflection-based approach failed because it passed null for Item.TooltipContext,
+     * which caused an NPE that was silently caught — meaning lore text was never captured.
+     */
     private void appendTooltip(StringBuilder builder, ItemStack stack, PlayerEntity player) {
         try {
-            for (Method method : stack.getClass().getMethods()) {
-                if (!method.getName().equals("getTooltip")) {
-                    continue;
-                }
-                Object[] args = buildTooltipArgs(method.getParameterTypes(), player);
-                if (args == null) {
-                    continue;
-                }
-                Object result = method.invoke(stack, args);
-                if (result instanceof List<?> tooltip) {
-                    for (Object line : tooltip) {
-                        if (line instanceof Text text) {
-                            builder.append(' ').append(text.getString().toLowerCase(Locale.ROOT));
-                        } else if (line != null) {
-                            builder.append(' ').append(line.toString().toLowerCase(Locale.ROOT));
-                        }
-                    }
-                }
-                return;
+            List<Text> tooltip = stack.getTooltip(Item.TooltipContext.DEFAULT, player, TooltipType.BASIC);
+            for (Text line : tooltip) {
+                builder.append(' ').append(line.getString().toLowerCase(Locale.ROOT));
             }
         } catch (Throwable ignored) {
-            // Best effort only.
+            // Best effort only — some edge-case items may not support tooltip generation.
         }
-    }
-
-    private Object[] buildTooltipArgs(Class<?>[] parameterTypes, PlayerEntity player) {
-        Object[] args = new Object[parameterTypes.length];
-        for (int i = 0; i < parameterTypes.length; i++) {
-            Class<?> type = parameterTypes[i];
-            if (type.isAssignableFrom(PlayerEntity.class)) {
-                args[i] = player;
-                continue;
-            }
-            if (type == boolean.class || type == Boolean.class) {
-                args[i] = Boolean.FALSE;
-                continue;
-            }
-            if (type.isEnum()) {
-                Object[] constants = type.getEnumConstants();
-                args[i] = constants.length == 0 ? null : constants[0];
-                continue;
-            }
-            if (!type.isPrimitive()) {
-                args[i] = null;
-                continue;
-            }
-            return null;
-        }
-        return args;
     }
 
     private static final class SlotQuery {

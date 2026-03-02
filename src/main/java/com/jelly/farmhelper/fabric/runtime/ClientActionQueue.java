@@ -30,6 +30,8 @@ public class ClientActionQueue {
         SET_PIP_MODE,
         SET_MOUSE_UNGRAB,
         SET_FREELOOK_MODE,
+        SET_USE_KEY,
+        TAP_ATTACK_KEY,
         REQUEST_WINDOW_ATTENTION,
         PLAY_MOVEMENT_RECORDING,
         STOP_MOVEMENT_RECORDING
@@ -159,6 +161,14 @@ public class ClientActionQueue {
 
     public void enqueueSetFreelookMode(boolean enabled, long tick) {
         enqueue(ActionType.SET_FREELOOK_MODE, Boolean.toString(enabled), tick);
+    }
+
+    public void enqueueSetUseKey(boolean enabled, long tick) {
+        enqueue(ActionType.SET_USE_KEY, Boolean.toString(enabled), tick);
+    }
+
+    public void enqueueTapAttackKey(long tick) {
+        enqueue(ActionType.TAP_ATTACK_KEY, "tap", tick);
     }
 
     public void enqueueRequestWindowAttention(String reason, long tick) {

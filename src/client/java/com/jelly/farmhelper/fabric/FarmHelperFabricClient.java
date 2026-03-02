@@ -21,12 +21,13 @@ import com.jelly.farmhelper.fabric.state.FreelookController;
 import com.jelly.farmhelper.fabric.state.GameStateHandler;
 import com.jelly.farmhelper.fabric.state.GameStateTracker;
 import com.jelly.farmhelper.fabric.state.RuntimeGuards;
-import com.jelly.farmhelper.fabric.ui.FarmHelperConfigScreen;
+import com.jelly.farmhelper.fabric.ui.FarmHelperYaclScreen;
 import com.jelly.farmhelper.fabric.util.AudioManager;
 import com.jelly.farmhelper.fabric.util.Chat;
 import com.jelly.farmhelper.fabric.util.FailsafeUtils;
 import com.jelly.farmhelper.fabric.util.InventoryUtils;
 import com.jelly.farmhelper.fabric.util.PlotUtils;
+import com.jelly.farmhelper.fabric.util.PlayerUtils;
 import com.jelly.farmhelper.fabric.util.RenderUtils;
 import com.jelly.farmhelper.fabric.util.ScoreboardUtils;
 import com.jelly.farmhelper.fabric.util.TablistUtils;
@@ -56,7 +57,9 @@ import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.effect.StatusEffects;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.tooltip.TooltipType;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
@@ -73,7 +76,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
     private static final long KEYBIND_DEBOUNCE_TICKS = 4L;
     private static final Pattern INFESTED_PLOT_PATTERN = Pattern.compile("plot\\s*(\\d+).*?(\\d+)\\s*pests?", Pattern.CASE_INSENSITIVE);
     private static final Pattern GUI_PLOT_PATTERN = Pattern.compile("plot\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern GUI_PEST_PATTERN = Pattern.compile("(\\d+)\\D{0,20}pests?", Pattern.CASE_INSENSITIVE);
+    private static final Pattern GUI_PEST_PATTERN = Pattern.compile("(\\d+)\\D*?pests?", Pattern.CASE_INSENSITIVE);
     private static final int[] CONFIGURE_PLOT_ORDER = {
             21, 13, 9, 14, 22,
             15, 5, 1, 6, 16,
@@ -468,6 +471,9 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         copy.godPotionActive = FEATURE_RUNTIME_STATE.godPotionActive;
         copy.cookieBuffActive = FEATURE_RUNTIME_STATE.cookieBuffActive;
         copy.pestRepellentActive = FEATURE_RUNTIME_STATE.pestRepellentActive;
+        copy.vacuumRange = FEATURE_RUNTIME_STATE.vacuumRange;
+        copy.vacuumDps = FEATURE_RUNTIME_STATE.vacuumDps;
+        copy.vacuumTrackerCooldownSeconds = FEATURE_RUNTIME_STATE.vacuumTrackerCooldownSeconds;
         copy.purse = FEATURE_RUNTIME_STATE.purse;
         copy.bits = FEATURE_RUNTIME_STATE.bits;
         copy.copper = FEATURE_RUNTIME_STATE.copper;
@@ -476,7 +482,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
     }
 
     public static Screen createConfigScreen(Screen parent) {
-        return new FarmHelperConfigScreen(parent);
+        return FarmHelperYaclScreen.create(parent);
     }
 
     public static void requestGlobalStop() {
@@ -653,10 +659,17 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             for (String loreLine : InventoryUtils.getItemLore(stack)) {
                 combinedBuilder.append(cleanFormatting(loreLine).toLowerCase(Locale.ROOT)).append(' ');
             }
-            // Tooltip metadata fallback is critical on 1.21 when lore component extraction is inconsistent.
-            String metadata = GUI_DECISION_ENGINE.extractItemMetadata(stack, client.player);
-            if (metadata != null && !metadata.isBlank()) {
-                combinedBuilder.append(cleanFormatting(metadata).toLowerCase(Locale.ROOT)).append(' ');
+            // Direct 1.21 tooltip API — the most reliable way to get all visible item text.
+            try {
+                for (Text tooltipLine : stack.getTooltip(Item.TooltipContext.DEFAULT, client.player, TooltipType.BASIC)) {
+                    combinedBuilder.append(cleanFormatting(tooltipLine.getString()).toLowerCase(Locale.ROOT)).append(' ');
+                }
+            } catch (Throwable ignored) {
+                // Fallback to extractItemMetadata if direct tooltip fails.
+                String metadata = GUI_DECISION_ENGINE.extractItemMetadata(stack, client.player);
+                if (metadata != null && !metadata.isBlank()) {
+                    combinedBuilder.append(cleanFormatting(metadata).toLowerCase(Locale.ROOT)).append(' ');
+                }
             }
             String combined = combinedBuilder.toString();
 
@@ -714,9 +727,26 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         }
         if (configurePlotsScreen && bestPlot <= 0 && tickCounter - lastGuiNoMatchDebugTick >= 40L) {
             lastGuiNoMatchDebugTick = tickCounter;
+            // Dump the first few slot summaries so the debug log reveals what the screen actually contains.
+            StringBuilder slotDump = new StringBuilder();
+            int dumpCount = 0;
+            for (Slot slot : client.player.currentScreenHandler.slots) {
+                if (slot == null || !slot.hasStack() || slot.inventory == client.player.getInventory()) continue;
+                ItemStack dumpStack = slot.getStack();
+                if (dumpStack == null || dumpStack.isEmpty()) continue;
+                if (dumpCount < 6) {
+                    String dumpName = cleanFormatting(dumpStack.getName().getString());
+                    int loreLineCount = InventoryUtils.getItemLore(dumpStack).size();
+                    slotDump.append(" [slot").append(slot.id).append(" name=\"").append(dumpName)
+                            .append("\" loreLines=").append(loreLineCount).append("]");
+                }
+                dumpCount++;
+            }
             FarmHelperFabric.getWebhookService().debugTrace(
                     "runtime",
-                    "configure plots scan found no infested card; sample=\"" + (bestNoMatchSample == null ? "none" : bestNoMatchSample) + "\""
+                    "configure plots scan found no infested card; totalSlots=" + dumpCount
+                            + " slots:" + slotDump
+                            + " sample=\"" + (bestNoMatchSample == null ? "none" : bestNoMatchSample) + "\""
             );
         }
         return bestPlot > 0 ? new GuiInfestedPlot(bestPlot, bestPests) : null;
@@ -794,6 +824,9 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             RUNTIME_SNAPSHOT.godPotionActive = false;
             RUNTIME_SNAPSHOT.cookieBuffActive = false;
             RUNTIME_SNAPSHOT.pestRepellentActive = false;
+            RUNTIME_SNAPSHOT.vacuumRange = 0;
+            RUNTIME_SNAPSHOT.vacuumDps = 0;
+            RUNTIME_SNAPSHOT.vacuumTrackerCooldownSeconds = 1.0;
             RUNTIME_SNAPSHOT.purse = 0;
             RUNTIME_SNAPSHOT.bits = 0;
             RUNTIME_SNAPSHOT.copper = 0;
@@ -873,6 +906,10 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         RUNTIME_SNAPSHOT.godPotionActive = GAME_STATE_HANDLER.isGodPotionActive();
         RUNTIME_SNAPSHOT.cookieBuffActive = GAME_STATE_HANDLER.isCookieBuffActive();
         RUNTIME_SNAPSHOT.pestRepellentActive = GAME_STATE_HANDLER.isPestRepellentActive();
+        PlayerUtils.VacuumStats vacuumStats = PlayerUtils.resolveBestVacuumStats(client);
+        RUNTIME_SNAPSHOT.vacuumRange = vacuumStats.range();
+        RUNTIME_SNAPSHOT.vacuumDps = vacuumStats.dps();
+        RUNTIME_SNAPSHOT.vacuumTrackerCooldownSeconds = vacuumStats.trackerCooldownSeconds();
         RUNTIME_SNAPSHOT.purse = GAME_STATE_HANDLER.getPurse();
         RUNTIME_SNAPSHOT.bits = GAME_STATE_HANDLER.getBits();
         RUNTIME_SNAPSHOT.copper = GAME_STATE_HANDLER.getCopper();
@@ -913,6 +950,9 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         FEATURE_RUNTIME_STATE.godPotionActive = RUNTIME_SNAPSHOT.godPotionActive;
         FEATURE_RUNTIME_STATE.cookieBuffActive = RUNTIME_SNAPSHOT.cookieBuffActive;
         FEATURE_RUNTIME_STATE.pestRepellentActive = RUNTIME_SNAPSHOT.pestRepellentActive;
+        FEATURE_RUNTIME_STATE.vacuumRange = RUNTIME_SNAPSHOT.vacuumRange;
+        FEATURE_RUNTIME_STATE.vacuumDps = RUNTIME_SNAPSHOT.vacuumDps;
+        FEATURE_RUNTIME_STATE.vacuumTrackerCooldownSeconds = RUNTIME_SNAPSHOT.vacuumTrackerCooldownSeconds;
         FEATURE_RUNTIME_STATE.purse = RUNTIME_SNAPSHOT.purse;
         FEATURE_RUNTIME_STATE.bits = RUNTIME_SNAPSHOT.bits;
         FEATURE_RUNTIME_STATE.copper = RUNTIME_SNAPSHOT.copper;
@@ -1147,8 +1187,13 @@ public class FarmHelperFabricClient implements ClientModInitializer {
 
         if (!postJoinAligned && config.rotateAfterWarped && worldJoinTick > 0 && tickCounter - worldJoinTick <= 80L) {
             if (Math.abs(config.spawnYaw) > 0.01f || Math.abs(config.spawnPitch) > 0.01f) {
-                client.player.setYaw(config.spawnYaw);
-                client.player.setPitch(config.spawnPitch);
+                RotationHandler.RotationConfiguration.Builder builder = new RotationHandler.RotationConfiguration.Builder()
+                        .target(config.spawnYaw, config.spawnPitch)
+                        .durationMs(Math.max(180L, config.rotationTimeMs))
+                        .easing(RotationHandler.Easing.EASE_OUT_CUBIC)
+                        .type(RotationHandler.RotationType.CLIENT)
+                        .lockHeadToBody(false);
+                ROTATION_HANDLER.rotate(builder.build());
             }
             postJoinAligned = true;
         }

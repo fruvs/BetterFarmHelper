@@ -37,6 +37,9 @@ public class FeatureRuntimeState {
     public boolean godPotionActive;
     public boolean cookieBuffActive;
     public boolean pestRepellentActive;
+    public double vacuumRange;
+    public double vacuumDps;
+    public double vacuumTrackerCooldownSeconds;
     public double purse;
     public double bits;
     public double copper;

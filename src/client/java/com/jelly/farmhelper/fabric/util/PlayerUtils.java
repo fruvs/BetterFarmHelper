@@ -13,14 +13,18 @@ import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.NbtComponent;
 import net.minecraft.item.AxeItem;
 import net.minecraft.item.HoeItem;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.ShearsItem;
+import net.minecraft.item.tooltip.TooltipType;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.hit.BlockHitResult;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -29,6 +33,8 @@ import java.util.regex.Pattern;
 public final class PlayerUtils {
     private static final Pattern SKYBLOCK_ID_PATTERN = Pattern.compile("id[=:]\"?([A-Z0-9_]{5,})");
     private static final Pattern SKYBLOCK_TIER_PATTERN = Pattern.compile("_(\\d+)$");
+    private static final Pattern VACUUM_DAMAGE_PATTERN = Pattern.compile("deals\\s*([0-9,.]+)\\s*.*damage\\s*per\\s*second", Pattern.CASE_INSENSITIVE);
+    private static final Pattern VACUUM_COOLDOWN_PATTERN = Pattern.compile("cooldown\\s*:?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*s", Pattern.CASE_INSENSITIVE);
 
     private PlayerUtils() {
     }
@@ -47,6 +53,12 @@ public final class PlayerUtils {
         ROSE,
         SUNFLOWER,
         NONE
+    }
+
+    public record VacuumStats(double range, double dps, double trackerCooldownSeconds, String source) {
+        public static VacuumStats empty() {
+            return new VacuumStats(0.0, 0.0, 1.0, "");
+        }
     }
 
     public static boolean isInventoryEmpty(ClientPlayerEntity player) {
@@ -143,6 +155,146 @@ public final class PlayerUtils {
             return bestSlot;
         }
         return -1;
+    }
+
+    public static double resolveBestVacuumRange(MinecraftClient client) {
+        return resolveBestVacuumStats(client).range();
+    }
+
+    public static VacuumStats resolveBestVacuumStats(MinecraftClient client) {
+        if (client == null || client.player == null) {
+            return VacuumStats.empty();
+        }
+
+        ClientPlayerEntity player = client.player;
+        VacuumStats selected = resolveVacuumStats(player.getMainHandStack(), player);
+        if (selected.range() > 0.0) {
+            return selected;
+        }
+
+        VacuumStats best = VacuumStats.empty();
+        for (int slot = 0; slot < 9; slot++) {
+            VacuumStats stats = resolveVacuumStats(player.getInventory().getStack(slot), player);
+            if (stats.range() > best.range()) {
+                best = stats;
+            }
+        }
+        if (best.range() > 0.0) {
+            return best;
+        }
+
+        for (ItemStack stack : player.getInventory().getMainStacks()) {
+            VacuumStats stats = resolveVacuumStats(stack, player);
+            if (stats.range() > best.range()) {
+                best = stats;
+            }
+        }
+        return best;
+    }
+
+    public static double resolveVacuumRange(ItemStack stack) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        return resolveVacuumStats(stack, client == null ? null : client.player).range();
+    }
+
+    public static VacuumStats resolveVacuumStats(ItemStack stack, ClientPlayerEntity player) {
+        if (stack == null || stack.isEmpty()) {
+            return VacuumStats.empty();
+        }
+        String itemId = extractSkyblockItemId(stack);
+        String metadata = (stack.getName().getString() + " " + stack.getItem() + " " + stack.getComponents())
+                .toLowerCase(Locale.ROOT);
+        if (!metadata.contains("vacuum") && !itemId.contains("VACUUM")) {
+            return VacuumStats.empty();
+        }
+        double range = resolveVacuumRangeFromTier(metadata, itemId);
+        double dps = resolveVacuumDpsFromTooltip(stack, player);
+        double cooldown = resolveVacuumCooldownFromTooltip(stack, player);
+        return new VacuumStats(range, dps, cooldown, stack.getName().getString());
+    }
+
+    private static double resolveVacuumRangeFromTier(String metadata, String itemId) {
+        if (metadata.contains("hooverius") || itemId.contains("HOOVERIUS")) {
+            return 15.0;
+        }
+        if (metadata.contains("infinivacuum") || itemId.contains("INFINIVACUUM")) {
+            return 12.5;
+        }
+        if (metadata.contains("hyper vacuum") || itemId.contains("HYPER_VACUUM")) {
+            return 10.0;
+        }
+        if (metadata.contains("turbo vacuum") || itemId.contains("TURBO_VACUUM")) {
+            return 7.5;
+        }
+        if (metadata.contains("skymart vacuum") || itemId.contains("SKYMART_VACUUM")) {
+            return 5.0;
+        }
+        return 5.0;
+    }
+
+    private static double resolveVacuumDpsFromTooltip(ItemStack stack, ClientPlayerEntity player) {
+        String dump = buildTooltipDump(stack, player);
+        if (dump.isEmpty()) {
+            return 0.0;
+        }
+        Matcher matcher = VACUUM_DAMAGE_PATTERN.matcher(stripColorCodes(dump));
+        if (!matcher.find()) {
+            return 0.0;
+        }
+        try {
+            return Double.parseDouble(matcher.group(1).replace(",", ""));
+        } catch (NumberFormatException ignored) {
+            return 0.0;
+        }
+    }
+
+    private static double resolveVacuumCooldownFromTooltip(ItemStack stack, ClientPlayerEntity player) {
+        String dump = buildTooltipDump(stack, player);
+        if (dump.isEmpty()) {
+            return 1.0;
+        }
+        Matcher matcher = VACUUM_COOLDOWN_PATTERN.matcher(stripColorCodes(dump));
+        if (!matcher.find()) {
+            return 1.0;
+        }
+        try {
+            return Math.max(0.2, Double.parseDouble(matcher.group(1)));
+        } catch (NumberFormatException ignored) {
+            return 1.0;
+        }
+    }
+
+    private static String buildTooltipDump(ItemStack stack, ClientPlayerEntity player) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            List<Text> tooltip = stack.getTooltip(Item.TooltipContext.DEFAULT, player, TooltipType.BASIC);
+            for (Text line : tooltip) {
+                if (line == null) {
+                    continue;
+                }
+                if (!sb.isEmpty()) {
+                    sb.append('\n');
+                }
+                sb.append(line.getString());
+            }
+        } catch (Throwable ignored) {
+        }
+        if (sb.isEmpty()) {
+            for (String loreLine : InventoryUtils.getItemLore(stack)) {
+                if (!sb.isEmpty()) {
+                    sb.append('\n');
+                }
+                sb.append(loreLine);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String stripColorCodes(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return value.replaceAll("§.", "");
     }
 
     public static boolean canBreakBlock(MinecraftClient client, BlockPos pos) {

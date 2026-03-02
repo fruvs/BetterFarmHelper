@@ -15,8 +15,11 @@ public class PestEntityHeuristics {
             "mosquito", "moth", "rat", "slug", "praying mantis",
             "firefly", "dragonfly", "pest"
     );
+    private static final List<String> NON_PEST_NAME_KEYWORDS = List.of(
+            "pesthunter", "philip", "visitor", "npc", "jacob"
+    );
     private static final List<String> PEST_ENTITY_TYPE_KEYWORDS = List.of(
-            "silverfish", "bat", "endermite", "spider", "cave_spider"
+            "silverfish", "bat", "endermite", "spider", "cave_spider", "slime", "magma_cube", "armor_stand"
     );
 
     // Legacy texture-signature fragments from the 1.8.9 implementation.
@@ -45,6 +48,9 @@ public class PestEntityHeuristics {
         String typeName = normalizedType(entity);
         String tags = commandTags(entity);
         String equipment = equipmentMetadata(entity);
+        if (containsAny(name, NON_PEST_NAME_KEYWORDS)) {
+            return 0.0;
+        }
         boolean nameHasKeyword = containsAny(name, PEST_KEYWORDS);
         boolean typeMatches = containsAny(typeName, PEST_ENTITY_TYPE_KEYWORDS);
         boolean tagsMatch = containsAny(tags, PEST_KEYWORDS);
@@ -74,7 +80,7 @@ public class PestEntityHeuristics {
         }
 
         // Armor stands are common false positives unless we have strong evidence.
-        if (typeName.contains("armor_stand") && !textureSignature && !equipmentHasKeyword) {
+        if (typeName.contains("armor_stand") && !textureSignature && !equipmentHasKeyword && !nameHasKeyword) {
             score -= 4.0;
         }
 
@@ -82,7 +88,7 @@ public class PestEntityHeuristics {
     }
 
     public boolean isLikelyPest(Entity entity) {
-        return score(entity) >= 10.5;
+        return score(entity) >= 8.0;
     }
 
     public boolean isConfirmedPest(Entity entity) {
@@ -93,6 +99,9 @@ public class PestEntityHeuristics {
         String typeName = normalizedType(entity);
         String tags = commandTags(entity);
         String equipment = equipmentMetadata(entity);
+        if (containsAny(name, NON_PEST_NAME_KEYWORDS)) {
+            return false;
+        }
         boolean nameHasKeyword = containsAny(name, PEST_KEYWORDS);
         boolean typeMatches = containsAny(typeName, PEST_ENTITY_TYPE_KEYWORDS);
         boolean tagsMatch = containsAny(tags, PEST_KEYWORDS);

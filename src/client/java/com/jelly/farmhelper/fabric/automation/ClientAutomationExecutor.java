@@ -1,21 +1,26 @@
 package com.jelly.farmhelper.fabric.automation;
 
 import com.jelly.farmhelper.fabric.FarmHelperFabric;
+import com.jelly.farmhelper.fabric.FarmHelperFabricClient;
 import com.jelly.farmhelper.fabric.config.FarmHelperConfig;
 import com.jelly.farmhelper.fabric.macro.MacroState;
 import com.jelly.farmhelper.fabric.runtime.ClientActionQueue;
 import com.jelly.farmhelper.fabric.state.ClientModeController;
 import com.jelly.farmhelper.fabric.util.InventoryUtils;
+import com.jelly.farmhelper.fabric.util.KeyBindUtils;
+import com.jelly.farmhelper.fabric.util.PlotUtils;
 import com.jelly.farmhelper.fabric.util.RenderUtils;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.math.Box;
 import org.lwjgl.glfw.GLFW;
 
 import java.awt.AWTException;
@@ -34,14 +39,37 @@ public class ClientAutomationExecutor {
     private static final int DEFAULT_RETRIES = 3;
     private static final float YAW_STEP = 12f;
     private static final float PITCH_STEP = 8f;
+    private static final float PEST_YAW_STEP_MIN = 3.5f;
+    private static final float PEST_YAW_STEP_MAX = 8.5f;
+    private static final float PEST_PITCH_STEP_MIN = 2.0f;
+    private static final float PEST_PITCH_STEP_MAX = 5.0f;
+    private static final float PEST_AIM_LAG_ALPHA = 0.38f;
+    private static final double PEST_AIM_JITTER = 0.10;
+    private static final float PEST_DEADZONE_YAW_FALLBACK = 4.5f;
+    private static final float PEST_DEADZONE_PITCH_FALLBACK = 3.0f;
     private static final long RETRY_INTERVAL_TICKS = 12L;
+    private static final long DEBUG_THINK_INTERVAL_TICKS = 8L;
     private static final Set<String> PEST_QUERY_TOKENS = Set.of(
-            "pest", "pests", "beetle", "cricket", "earthworm", "fly", "locust", "mite",
-            "mosquito", "moth", "rat", "slug", "praying mantis", "firefly", "dragonfly"
+            "beetle", "cricket", "earthworm", "fly", "locust", "mite",
+            "mosquito", "moth", "rat", "slug", "praying mantis", "firefly", "dragonfly", "pest", "pests"
+    );
+    private static final Set<String> NON_PEST_TARGET_KEYWORDS = Set.of(
+            "pesthunter", "philip", "visitor", "npc", "jacob"
     );
     private static final int PEST_TRACER_COLOR = 0xFF3FC4FF;
     private static final int PEST_BOX_COLOR = 0xFF56D8FF;
     private static final int PEST_TEXT_COLOR = 0xFFE8F9FF;
+    private static final Vec3d[] PEST_SEARCH_OFFSETS = new Vec3d[] {
+            new Vec3d(0, 0, 0),
+            new Vec3d(18, 0, 0),
+            new Vec3d(-18, 0, 0),
+            new Vec3d(0, 0, 18),
+            new Vec3d(0, 0, -18),
+            new Vec3d(24, 0, 24),
+            new Vec3d(-24, 0, 24),
+            new Vec3d(24, 0, -24),
+            new Vec3d(-24, 0, -24)
+    };
 
     private final PathfinderService pathfinderService = new PathfinderService();
     private final GuiDecisionEngine guiDecisionEngine = new GuiDecisionEngine();
@@ -140,6 +168,8 @@ public class ClientAutomationExecutor {
             case SET_PIP_MODE -> applyPipMode(client, action.payload());
             case SET_MOUSE_UNGRAB -> applyMouseUngrab(client, action.payload());
             case SET_FREELOOK_MODE -> applyFreelookMode(client, action.payload());
+            case SET_USE_KEY -> applyUseKeyHold(client, Boolean.parseBoolean(action.payload()));
+            case TAP_ATTACK_KEY -> KeyBindUtils.leftClick(client);
             case REQUEST_WINDOW_ATTENTION -> requestWindowAttention(action.payload());
             case PLAY_MOVEMENT_RECORDING -> playMovementRecording(client, action.payload());
             case STOP_MOVEMENT_RECORDING -> movementRecordingPlayer.stop(client);
@@ -210,6 +240,13 @@ public class ClientAutomationExecutor {
     private void applyFreelookMode(MinecraftClient client, String payload) {
         boolean enabled = Boolean.parseBoolean(payload == null ? "false" : payload.trim());
         modeController.setFreelook(client, enabled);
+    }
+
+    private void applyUseKeyHold(MinecraftClient client, boolean pressed) {
+        if (client == null) {
+            return;
+        }
+        KeyBindUtils.holdUse(client, pressed);
     }
 
     private void playMovementRecording(MinecraftClient client, String payload) {
@@ -295,6 +332,10 @@ public class ClientAutomationExecutor {
         Entity nearest = findNearestEntity(client, namesCsv, 64.0);
         if (nearest == null) {
             stopMovement(client);
+            debugThink(action, nowTick, "no entity match for move request names=" + namesCsv);
+            if (pestMode && tickPestSearchFallback(client, action, nowTick)) {
+                return false;
+            }
             return retryOrFinish(action, nowTick);
         }
         if (pestMode) {
@@ -314,12 +355,16 @@ public class ClientAutomationExecutor {
         Entity nearest = findNearestEntity(client, namesCsv, 80.0);
         if (nearest == null) {
             stopMovement(client);
+            debugThink(action, nowTick, "no entity match for fly request names=" + namesCsv);
+            if (pestMode && tickPestSearchFallback(client, action, nowTick)) {
+                return false;
+            }
             return retryOrFinish(action, nowTick);
         }
         if (pestMode) {
             renderPestTargetMarker(nearest, "Fly");
         }
-        return flyTowards(client, entityPos(nearest), radius, action, nowTick);
+        return flyTowards(client, entityPos(nearest), radius, action, nowTick, pestMode);
     }
 
     private boolean tickEntityInteraction(MinecraftClient client, ActiveAction action, long nowTick, boolean attack) {
@@ -334,35 +379,78 @@ public class ClientAutomationExecutor {
         Entity nearest = findNearestEntity(client, namesCsv, 64.0);
         if (nearest == null) {
             stopMovement(client);
-            if (attack && pestMode && action.entityInteractionHits > 0) {
-                return true;
+            if (attack && pestMode) {
+                applyUseKeyHold(client, false);
+                action.pestConsecutiveNoTargetTicks++;
+                debugThink(action, nowTick, "pest target lost, scanning plot");
+                if (tickPestSearchFallback(client, action, nowTick)) {
+                    if (action.pestConsecutiveNoTargetTicks >= 28L) {
+                        return true;
+                    }
+                    return false;
+                }
+                long probeInterval = resolvePestProbeIntervalTicks();
+                if (nowTick - action.entityInteractionLastHitTick >= probeInterval) {
+                    KeyBindUtils.leftClick(client);
+                    action.entityInteractionLastHitTick = nowTick;
+                }
+                if (action.entityInteractionHits > 0 && action.pestConsecutiveNoTargetTicks >= 12L) {
+                    return true;
+                }
+                if (action.pestConsecutiveNoTargetTicks >= 30L) {
+                    return true;
+                }
             }
             return retryOrFinish(action, nowTick);
         }
+        action.pestConsecutiveNoTargetTicks = 0L;
         if (pestMode) {
             renderPestTargetMarker(nearest, attack ? "Attack" : "Interact");
         }
 
-        if (!navigateTowards(client, action, entityPos(nearest), radius, nowTick)) {
+        Vec3d targetPos = entityPos(nearest);
+        if (pestMode && (client.player.getAbilities().flying || client.player.getAbilities().allowFlying)) {
+            if (!flyTowards(client, targetPos, Math.max(2.6, radius * 0.9), action, nowTick, true)) {
+                debugThink(
+                        action,
+                        nowTick,
+                        "flying toward pest " + nearest.getName().getString() + " dist="
+                                + String.format(Locale.US, "%.2f", targetPos.distanceTo(playerPos(client)))
+                );
+                return false;
+            }
+        } else if (!navigateTowards(client, action, targetPos, radius, nowTick)) {
             return false;
         }
 
-        lookAt(client, entityPos(nearest));
+        if (pestMode) {
+            lookAtPest(client, targetPos, action, nowTick);
+        } else {
+            lookAt(client, targetPos);
+        }
         stopMovement(client);
         if (attack) {
             if (action.entityInteractionTargetId != nearest.getId()) {
                 action.entityInteractionTargetId = nearest.getId();
                 action.entityInteractionHits = 0;
                 action.entityInteractionLastHitTick = nowTick - 5L;
+                action.pestSmoothedTarget = targetPos;
+            }
+            if (pestMode) {
+                applyUseKeyHold(client, true);
+                action.entityInteractionHits++;
+                action.pestLastSeenTick = nowTick;
+                // Keep chasing/holding vacuum for a while; the caller refreshes this action periodically.
+                if (nowTick - action.startTick >= 160L) {
+                    return true;
+                }
+                return false;
             }
             if (nowTick - action.entityInteractionLastHitTick >= 5L) {
                 client.interactionManager.attackEntity(client.player, nearest);
                 client.player.swingHand(Hand.MAIN_HAND);
                 action.entityInteractionLastHitTick = nowTick;
                 action.entityInteractionHits++;
-            }
-            if (pestMode) {
-                return action.entityInteractionHits >= 3;
             }
             return action.entityInteractionHits >= 1;
         } else {
@@ -572,10 +660,12 @@ public class ClientAutomationExecutor {
 
         if (navigationState.path.isEmpty() || navigationState.index >= navigationState.path.size()) {
             // Fallback if no path was found.
+            debugThink(action, nowTick, "path empty, fallback direct move");
             return moveDirect(client, target, stopDistance, action, nowTick);
         }
 
         Vec3d waypoint = navigationState.path.get(navigationState.index);
+        renderNavigationPathMarkers(action, navigationState, playerPos);
         if (playerPos.distanceTo(waypoint) <= 0.9) {
             navigationState.index++;
             if (navigationState.index >= navigationState.path.size()) {
@@ -587,18 +677,67 @@ public class ClientAutomationExecutor {
         if (isStuck(playerPos, nowTick)) {
             if (navigationState.replanAttempts < action.maxRetries) {
                 navigationState.replanAttempts++;
+                debugThink(action, nowTick, "stuck while pathing, replanning attempt=" + navigationState.replanAttempts);
                 planPath(client, navigationState, playerPos);
             } else {
+                debugThink(action, nowTick, "stuck after max replans, direct move fallback");
                 return moveDirect(client, target, stopDistance, action, nowTick);
             }
         }
         return moveToPoint(client, waypoint, Math.max(0.8, stopDistance * 0.5));
     }
 
+    private void renderNavigationPathMarkers(ActiveAction action, NavigationState nav, Vec3d playerPos) {
+        if (action == null || nav == null || nav.path == null || nav.path.isEmpty()) {
+            return;
+        }
+        FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
+        boolean show = isDebugModeEnabled() || (action.pestAction && config.pestsTracers);
+        if (!show) {
+            return;
+        }
+        int limit = Math.min(nav.path.size(), 20);
+        Vec3d prev = playerPos;
+        for (int i = Math.max(0, nav.index); i < limit; i++) {
+            Vec3d point = nav.path.get(i);
+            int color = i == nav.index ? 0xFFF4D35E : 0xFF7AC8F7;
+            Box box = new Box(
+                    point.x - 0.20, point.y - 0.08, point.z - 0.20,
+                    point.x + 0.20, point.y + 0.08, point.z + 0.20
+            );
+            RenderUtils.drawBox(box, color, 4L);
+            RenderUtils.drawTracer(point, color, 4L);
+            if (i == nav.index) {
+                RenderUtils.drawText(
+                        point.add(0.0, 0.30, 0.0),
+                        "Path " + (nav.index + 1) + "/" + nav.path.size(),
+                        0xFFFDF4C8,
+                        4L
+                );
+            }
+            if (prev != null && i > nav.index) {
+                RenderUtils.drawTracer(point.lerp(prev, 0.5), 0xFF4FA7D6, 3L);
+            }
+            prev = point;
+        }
+    }
+
     private void planPath(MinecraftClient client, NavigationState nav, Vec3d start) {
         nav.path = pathfinderService.findPath(client, start, nav.goal, 1800);
         nav.index = Math.min(1, Math.max(0, nav.path.size() - 1));
         nav.lastReplanTick = nav.lastProgressTick;
+        if (isDebugModeEnabled()) {
+            FarmHelperFabric.getWebhookService().debugTrace(
+                    "automation-path",
+                    String.format(
+                            Locale.US,
+                            "plan path start=(%.2f,%.2f,%.2f) goal=(%.2f,%.2f,%.2f) nodes=%d",
+                            start.x, start.y, start.z,
+                            nav.goal.x, nav.goal.y, nav.goal.z,
+                            nav.path.size()
+                    )
+            );
+        }
     }
 
     private boolean moveDirect(MinecraftClient client, Vec3d target, double stopDistance, ActiveAction action, long nowTick) {
@@ -633,7 +772,7 @@ public class ClientAutomationExecutor {
         return false;
     }
 
-    private boolean flyTowards(MinecraftClient client, Vec3d target, double stopDistance, ActiveAction action, long nowTick) {
+    private boolean flyTowards(MinecraftClient client, Vec3d target, double stopDistance, ActiveAction action, long nowTick, boolean pestMode) {
         Vec3d player = playerPos(client);
         double dx = target.x - player.x;
         double dy = target.y - player.y;
@@ -644,7 +783,11 @@ public class ClientAutomationExecutor {
             return true;
         }
 
-        lookAt(client, target);
+        if (pestMode) {
+            lookAtPest(client, target, action, nowTick);
+        } else {
+            lookAt(client, target);
+        }
         boolean canFly = client.player.getAbilities().allowFlying || client.player.getAbilities().flying;
 
         client.options.forwardKey.setPressed(true);
@@ -654,6 +797,9 @@ public class ClientAutomationExecutor {
         client.options.backKey.setPressed(false);
         client.options.jumpKey.setPressed(canFly ? dy > 0.6 : (client.player.horizontalCollision || dy > 1.0));
         client.options.sneakKey.setPressed(canFly && dy < -0.8);
+        if (isDebugModeEnabled()) {
+            RenderUtils.drawTracer(target, 0xFF9FE2FF, 4L);
+        }
 
         if (nowTick >= action.timeoutTick) {
             return retryOrFinish(action, nowTick);
@@ -696,6 +842,77 @@ public class ClientAutomationExecutor {
         client.player.setPitch(MathHelper.clamp(pitch, -90f, 90f));
     }
 
+    private void lookAtPest(MinecraftClient client, Vec3d target, ActiveAction action, long nowTick) {
+        if (client == null || client.player == null || target == null || action == null) {
+            return;
+        }
+        FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
+        float deadzoneYaw = Math.max(0.5f, config.pestsAimDeadzoneYaw <= 0f ? PEST_DEADZONE_YAW_FALLBACK : config.pestsAimDeadzoneYaw);
+        float deadzonePitch = Math.max(0.5f, config.pestsAimDeadzonePitch <= 0f ? PEST_DEADZONE_PITCH_FALLBACK : config.pestsAimDeadzonePitch);
+
+        Vec3d jittered = new Vec3d(
+                target.x + randomBetween(-PEST_AIM_JITTER, PEST_AIM_JITTER),
+                target.y + randomBetween(-PEST_AIM_JITTER * 0.55, PEST_AIM_JITTER * 0.55),
+                target.z + randomBetween(-PEST_AIM_JITTER, PEST_AIM_JITTER)
+        );
+        if (action.pestSmoothedTarget == null) {
+            action.pestSmoothedTarget = jittered;
+        } else {
+            action.pestSmoothedTarget = action.pestSmoothedTarget.lerp(jittered, PEST_AIM_LAG_ALPHA);
+        }
+
+        double dx = action.pestSmoothedTarget.x - client.player.getX();
+        double dy = action.pestSmoothedTarget.y + client.player.getStandingEyeHeight() - client.player.getEyeY();
+        double dz = action.pestSmoothedTarget.z - client.player.getZ();
+        double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+
+        float targetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        float targetPitch = (float) (-Math.toDegrees(Math.atan2(dy, horizontalDistance)));
+
+        float yawDelta = Math.abs(MathHelper.wrapDegrees(targetYaw - client.player.getYaw()));
+        float pitchDelta = Math.abs(MathHelper.wrapDegrees(targetPitch - client.player.getPitch()));
+        if (yawDelta <= deadzoneYaw && pitchDelta <= deadzonePitch) {
+            if (isDebugModeEnabled() && nowTick - action.lastThinkLogTick >= DEBUG_THINK_INTERVAL_TICKS) {
+                action.lastThinkLogTick = nowTick;
+                FarmHelperFabric.getWebhookService().debugTrace(
+                        "automation-aim",
+                        String.format(
+                                Locale.US,
+                                "pest in deadzone yawΔ=%.2f pitchΔ=%.2f box=%.1f/%.1f",
+                                yawDelta,
+                                pitchDelta,
+                                deadzoneYaw,
+                                deadzonePitch
+                        )
+                );
+            }
+            return;
+        }
+
+        float yawStep = (float) randomBetween(PEST_YAW_STEP_MIN, PEST_YAW_STEP_MAX);
+        float pitchStep = (float) randomBetween(PEST_PITCH_STEP_MIN, PEST_PITCH_STEP_MAX);
+        float yaw = approachAngle(client.player.getYaw(), targetYaw, yawStep);
+        float pitch = approach(client.player.getPitch(), targetPitch, pitchStep);
+        client.player.setYaw(yaw);
+        client.player.setPitch(MathHelper.clamp(pitch, -90f, 90f));
+
+        if (isDebugModeEnabled() && nowTick - action.lastThinkLogTick >= DEBUG_THINK_INTERVAL_TICKS) {
+            action.lastThinkLogTick = nowTick;
+            FarmHelperFabric.getWebhookService().debugTrace(
+                    "automation-aim",
+                    String.format(
+                            Locale.US,
+                            "pest aim lag target=(%.2f,%.2f,%.2f) yawStep=%.2f pitchStep=%.2f",
+                            action.pestSmoothedTarget.x,
+                            action.pestSmoothedTarget.y,
+                            action.pestSmoothedTarget.z,
+                            yawStep,
+                            pitchStep
+                    )
+            );
+        }
+    }
+
     private Entity findNearestEntity(MinecraftClient client, String namesCsv, double maxDistance) {
         if (client.world == null || client.player == null) {
             return null;
@@ -706,7 +923,8 @@ public class ClientAutomationExecutor {
         }
         boolean pestMode = isPestRequest(normalizedNames);
 
-        double bestDistanceSq = maxDistance * maxDistance;
+        double effectiveDistance = pestMode ? Math.max(maxDistance, 192.0) : maxDistance;
+        double bestDistanceSq = effectiveDistance * effectiveDistance;
         Entity best = null;
         double bestPestScore = -1.0;
 
@@ -714,11 +932,15 @@ public class ClientAutomationExecutor {
             if (entity == null || entity == client.player) {
                 continue;
             }
+            if (!entity.isAlive()) {
+                continue;
+            }
             String entityName = entity.getName().getString().toLowerCase(Locale.ROOT);
             boolean nameMatches = normalizedNames.stream().anyMatch(entityName::contains);
             if (!nameMatches && !pestMode) {
                 continue;
             }
+            String typeName = entity.getType().toString().toLowerCase(Locale.ROOT);
 
             double distSq = entity.squaredDistanceTo(client.player);
             if (distSq > bestDistanceSq) {
@@ -726,13 +948,16 @@ public class ClientAutomationExecutor {
             }
 
             if (pestMode) {
+                if (entity instanceof PlayerEntity) {
+                    continue;
+                }
                 double pestScore = pestHeuristics.score(entity);
                 boolean confirmed = pestHeuristics.isConfirmedPest(entity);
                 boolean likely = pestHeuristics.isLikelyPest(entity);
-                if (!confirmed && (!nameMatches || pestScore < 7.5)) {
+                if (looksLikeNonPestTarget(entityName, typeName) && !confirmed) {
                     continue;
                 }
-                if (!confirmed && !likely && !nameMatches) {
+                if (!confirmed && !likely) {
                     continue;
                 }
                 if (pestScore > bestPestScore || (pestScore == bestPestScore && distSq < bestDistanceSq)) {
@@ -748,7 +973,46 @@ public class ClientAutomationExecutor {
         return best;
     }
 
-    private List<String> parseNames(String csv) {
+    private boolean tickPestSearchFallback(MinecraftClient client, ActiveAction action, long nowTick) {
+        if (client == null || client.player == null) {
+            return false;
+        }
+        Vec3d target = computePestSearchWaypoint(client, action);
+        if (target == null) {
+            return false;
+        }
+        RenderUtils.drawTracer(target, 0xFF4BC7FF, 8L);
+        RenderUtils.drawText(target.add(0.0, 0.45, 0.0), "Searching pests...", 0xFFE8F9FF, 8L);
+        boolean reached = navigateTowards(client, action, target, 2.6, nowTick);
+        if (reached && nowTick - action.pestSearchLastAdvanceTick >= 8L) {
+            action.pestSearchWaypointIndex++;
+            action.pestSearchLastAdvanceTick = nowTick;
+        }
+        return true;
+    }
+
+    private Vec3d computePestSearchWaypoint(MinecraftClient client, ActiveAction action) {
+        if (client == null || client.player == null) {
+            return null;
+        }
+        int plot = PlotUtils.getPlotNumber(client.player.getBlockPos()).orElse(-1);
+        if (plot <= 0) {
+            return null;
+        }
+        BlockPos center = PlotUtils.getPlotCenter(plot);
+        if (center == null) {
+            return null;
+        }
+        int index = Math.floorMod(action.pestSearchWaypointIndex, PEST_SEARCH_OFFSETS.length);
+        Vec3d offset = PEST_SEARCH_OFFSETS[index];
+        return new Vec3d(
+                center.getX() + 0.5 + offset.x,
+                client.player.getY(),
+                center.getZ() + 0.5 + offset.z
+        );
+    }
+
+    private static List<String> parseNames(String csv) {
         String[] names = csv.split(",");
         List<String> normalized = new ArrayList<>(names.length);
         for (String name : names) {
@@ -760,7 +1024,7 @@ public class ClientAutomationExecutor {
         return normalized;
     }
 
-    private boolean isPestRequest(List<String> names) {
+    private static boolean isPestRequest(List<String> names) {
         for (String name : names) {
             if (PEST_QUERY_TOKENS.contains(name)) {
                 return true;
@@ -769,7 +1033,29 @@ public class ClientAutomationExecutor {
         return false;
     }
 
-    private String parseSlotQuery(String payload) {
+    private static boolean isPestAction(ClientActionQueue.Action action) {
+        if (action == null) {
+            return false;
+        }
+        return switch (action.type()) {
+            case MOVE_TO_ENTITY, FLY_TO_ENTITY, INTERACT_NEAREST_ENTITY, ATTACK_NEAREST_ENTITY ->
+                    isPestRequest(parseNames(parseSlotQuery(action.payload())));
+            default -> false;
+        };
+    }
+
+    private boolean looksLikeNonPestTarget(String entityName, String typeName) {
+        for (String keyword : NON_PEST_TARGET_KEYWORDS) {
+            if (entityName.contains(keyword)) {
+                return true;
+            }
+        }
+        return typeName.contains("villager")
+                || typeName.contains("merchant")
+                || typeName.contains("wandering_trader");
+    }
+
+    private static String parseSlotQuery(String payload) {
         List<String> parts = split(payload);
         if (parts.isEmpty()) {
             return "";
@@ -871,7 +1157,7 @@ public class ClientAutomationExecutor {
         }
     }
 
-    private List<String> split(String payload) {
+    private static List<String> split(String payload) {
         List<String> result = new ArrayList<>();
         if (payload == null || payload.isBlank()) {
             return result;
@@ -891,6 +1177,33 @@ public class ClientAutomationExecutor {
         } catch (NumberFormatException ignored) {
             return fallback;
         }
+    }
+
+    private long resolvePestProbeIntervalTicks() {
+        FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
+        long trackerCooldownTicks = 20L;
+        // Tracker ability has cooldown, so only send probe clicks at that pace.
+        double cooldownSeconds = Math.max(0.2, FarmHelperFabricClient.getRuntimeSnapshot().vacuumTrackerCooldownSeconds);
+        trackerCooldownTicks = Math.max(4L, Math.round(cooldownSeconds * 20.0));
+        if (config.debugMode) {
+            return Math.max(6L, trackerCooldownTicks);
+        }
+        return Math.max(10L, trackerCooldownTicks);
+    }
+
+    private boolean isDebugModeEnabled() {
+        return FarmHelperFabric.getConfigManager().getConfig().debugMode;
+    }
+
+    private void debugThink(ActiveAction action, long nowTick, String message) {
+        if (!isDebugModeEnabled() || action == null || message == null || message.isBlank()) {
+            return;
+        }
+        if (nowTick - action.lastThinkLogTick < DEBUG_THINK_INTERVAL_TICKS) {
+            return;
+        }
+        action.lastThinkLogTick = nowTick;
+        FarmHelperFabric.getWebhookService().debugTrace("automation-think", message);
     }
 
     private boolean shouldSuppressRotationForAction(ClientActionQueue.ActionType type) {
@@ -928,6 +1241,13 @@ public class ClientAutomationExecutor {
         return current + Math.copySign(maxStep, delta);
     }
 
+    private double randomBetween(double min, double max) {
+        if (max <= min) {
+            return min;
+        }
+        return min + Math.random() * (max - min);
+    }
+
     private boolean isMacroDrivingMovement() {
         return FarmHelperFabric.getMacroController().isToggled()
                 && FarmHelperFabric.getMacroController().getState() == MacroState.FARMING
@@ -939,6 +1259,7 @@ public class ClientAutomationExecutor {
         private final long startTick;
         private final long timeoutTick;
         private final int maxRetries;
+        private final boolean pestAction;
         private int retries;
         private long lastRetryTick;
         private BlockPos miningTarget;
@@ -946,12 +1267,19 @@ public class ClientAutomationExecutor {
         private int entityInteractionTargetId;
         private long entityInteractionLastHitTick;
         private int entityInteractionHits;
+        private long pestConsecutiveNoTargetTicks;
+        private long pestLastSeenTick;
+        private Vec3d pestSmoothedTarget;
+        private int pestSearchWaypointIndex;
+        private long pestSearchLastAdvanceTick;
+        private long lastThinkLogTick;
 
         private ActiveAction(ClientActionQueue.Action action, long startTick, long timeoutTick, int maxRetries) {
             this.action = action;
             this.startTick = startTick;
             this.timeoutTick = timeoutTick;
             this.maxRetries = maxRetries;
+            this.pestAction = isPestAction(action);
             this.retries = 0;
             this.lastRetryTick = startTick;
             this.miningTarget = null;
@@ -959,6 +1287,12 @@ public class ClientAutomationExecutor {
             this.entityInteractionTargetId = Integer.MIN_VALUE;
             this.entityInteractionLastHitTick = startTick - 5L;
             this.entityInteractionHits = 0;
+            this.pestConsecutiveNoTargetTicks = 0L;
+            this.pestLastSeenTick = startTick;
+            this.pestSmoothedTarget = null;
+            this.pestSearchWaypointIndex = 0;
+            this.pestSearchLastAdvanceTick = startTick;
+            this.lastThinkLogTick = startTick - DEBUG_THINK_INTERVAL_TICKS;
         }
     }
 

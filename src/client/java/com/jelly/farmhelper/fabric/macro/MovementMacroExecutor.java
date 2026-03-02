@@ -218,9 +218,6 @@ public class MovementMacroExecutor {
                 ? config.customPitchLevel
                 : randomBetween(activeTuning.pitchMin(), activeTuning.pitchMax());
 
-        player.setYaw(targetYaw);
-        player.setPitch(targetPitch);
-
         if (activeType == LegacyMacroType.S_PUMPKIN_MELON_DEFAULT_PLOT) {
             moveRight = resolveInitialMelonDirection(client, targetYaw);
         }
@@ -230,8 +227,6 @@ public class MovementMacroExecutor {
         initializeRouteState(client);
         if (activeType == LegacyMacroType.S_PUMPKIN_MELON_DEFAULT_PLOT) {
             updateMelonOrientationForState(config, true);
-            player.setYaw(targetYaw);
-            player.setPitch(targetPitch);
         }
         maybeAutoSelectTool(client, config, true);
         initialized = true;

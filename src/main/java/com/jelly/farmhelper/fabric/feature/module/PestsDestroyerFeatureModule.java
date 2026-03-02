@@ -27,7 +27,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
     }
 
     private static final Pattern PEST_COUNT_PATTERN = Pattern.compile("(\\d+)\\s+pests?", Pattern.CASE_INSENSITIVE);
-    private static final String PEST_NAMES_CSV = "beetle,cricket,earthworm,fly,locust,mite,mosquito,moth,rat,slug,praying mantis,firefly,dragonfly,pest";
+    private static final String PEST_NAMES_CSV = "beetle,cricket,earthworm,fly,locust,mite,mosquito,moth,rat,slug,praying mantis,firefly,dragonfly";
     private static final long VACUUM_COOLDOWN_BACKOFF_MS = 4500L;
 
     /** Max ticks to wait for a GUI screen to appear after sending a command. */
@@ -56,6 +56,8 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
     private boolean seenKillSignalThisPass;
     private boolean manualTriggerRequested;
     private double activeVacuumRange = 5.0;
+    private long lastParticleProbeTick = -1L;
+    private boolean vacuumUseHeld;
 
     public PestsDestroyerFeatureModule(boolean enabled) {
         super("pests_destroyer", "Pests Destroyer", enabled);
@@ -75,6 +77,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         super.onDisable();
         queuedPests = 0;
         manualTriggerRequested = false;
+        releaseVacuumUse(0L);
         resetState();
     }
 
@@ -83,6 +86,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         super.onDisconnect();
         queuedPests = 0;
         manualTriggerRequested = false;
+        releaseVacuumUse(0L);
         resetState();
     }
 
@@ -92,6 +96,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         queuedPests = 0;
         manualTriggerRequested = false;
         lastActionTick = -1L;
+        releaseVacuumUse(0L);
         resetState();
     }
 
@@ -99,6 +104,10 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
     public void onTick(FeatureRuntimeState runtime) {
         FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
         if (!config.enablePestsDestroyer) {
+            if (isActionRunning()) {
+                endTimedAction("pests destroyer disabled");
+            }
+            releaseVacuumUse(runtime.tickCount);
             resetState();
             return;
         }
@@ -110,6 +119,9 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
             lastKnownInfestedPlot = runtime.guiInfestedPlot;
         }
         if (runtime.activeFailsafe.isPresent()) {
+            if (isActionRunning()) {
+                releaseVacuumUse(runtime.tickCount);
+            }
             return;
         }
 
@@ -123,6 +135,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
             lastActionTick = runtime.tickCount;
             queuedPests = 0;
             manualTriggerRequested = false;
+            releaseVacuumUse(runtime.tickCount);
             closeScreenIfOpen(runtime, runtime.tickCount);
             resetState();
             return;
@@ -410,20 +423,45 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                     seenKillSignalThisPass = false;
                     nextHuntTick = runtime.tickCount;
                     queueSelectHotbarItem("vacuum", runtime.tickCount);
-                    activeVacuumRange = resolveConfiguredVacuumRange(config);
+                    setVacuumUse(runtime.tickCount, true);
+                    activeVacuumRange = resolveActiveVacuumRange(runtime, config);
+                    if (config.debugMode) {
+                        FarmHelperFabric.getWebhookService().debugTrace(
+                                "feature",
+                                String.format(
+                                        Locale.US,
+                                        "pests_destroyer hunt pass=%d range=%.2f dps=%.1f trackerCd=%.2fs",
+                                        passCount,
+                                        activeVacuumRange,
+                                        runtime.vacuumDps,
+                                        runtime.vacuumTrackerCooldownSeconds
+                                )
+                        );
+                    }
                 }
 
-                long vacuumIntervalTicks = resolveVacuumIntervalTicks(config);
+                long vacuumIntervalTicks = resolveVacuumIntervalTicks(runtime, config);
                 boolean cooldownElapsed = System.currentTimeMillis() >= vacuumCooldownUntilMs;
                 boolean queueReady = FarmHelperFabric.getClientActionQueue().size() <= 1;
                 boolean intervalElapsed = lastVacuumUseTick < 0 || runtime.tickCount - lastVacuumUseTick >= vacuumIntervalTicks;
                 if (runtime.tickCount >= nextHuntTick && cooldownElapsed && queueReady && intervalElapsed) {
-                    queueUseHeldItem(runtime.tickCount);
-                    queueAttackNearestEntity(PEST_NAMES_CSV, Math.max(3.8, activeVacuumRange), 90L, runtime.tickCount);
+                    queueAttackNearestEntity(
+                            PEST_NAMES_CSV,
+                            Math.max(3.8, activeVacuumRange),
+                            Math.max(100L, vacuumIntervalTicks * 4L),
+                            runtime.tickCount
+                    );
                     lastVacuumUseTick = runtime.tickCount;
                     nextHuntTick = runtime.tickCount + vacuumIntervalTicks;
                 } else if (runtime.tickCount >= nextHuntTick) {
                     nextHuntTick = runtime.tickCount + 6L;
+                }
+                if (!seenKillSignalThisPass
+                        && queueReady
+                        && runtime.tickCount - lastParticleProbeTick >= Math.max(4L, Math.round(Math.max(0.2, runtime.vacuumTrackerCooldownSeconds) * 20.0))
+                        && (lastVacuumUseTick < 0 || runtime.tickCount - lastVacuumUseTick >= 10L)) {
+                    queueTapAttackKey(runtime.tickCount);
+                    lastParticleProbeTick = runtime.tickCount;
                 }
 
                 long huntTicks = secondsToTicks(Math.max(4, config.pestsDestroyerActionSeconds));
@@ -532,8 +570,23 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
     }
 
     private void setState(State next, long nowTick, boolean resetRetries) {
+        State previous = state;
+        if (state == State.HUNT_PESTS && next != State.HUNT_PESTS) {
+            releaseVacuumUse(nowTick);
+        }
         state = next;
         stateSinceTick = nowTick;
+        FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
+        if (config.debugMode && previous != next) {
+            FarmHelperFabric.getWebhookService().debugTrace(
+                    "feature-state",
+                    "pests_destroyer " + previous + " -> " + next
+                            + " retries=" + stateRetries
+                            + " plot=" + targetPlot
+                            + " queued=" + queuedPests
+                            + " queueSize=" + FarmHelperFabric.getClientActionQueue().size()
+            );
+        }
         if (resetRetries) {
             stateRetries = 0;
         }
@@ -554,6 +607,8 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         seenKillSignalThisPass = false;
         manualTriggerRequested = false;
         activeVacuumRange = 5.0;
+        lastParticleProbeTick = -1L;
+        vacuumUseHeld = false;
     }
 
     /**
@@ -583,7 +638,10 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         }
     }
 
-    private double resolveConfiguredVacuumRange(FarmHelperConfig config) {
+    private double resolveActiveVacuumRange(FeatureRuntimeState runtime, FarmHelperConfig config) {
+        if (runtime != null && runtime.vacuumRange > 0.0) {
+            return runtime.vacuumRange;
+        }
         if (config == null) {
             return 5.0;
         }
@@ -604,8 +662,28 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         return -1;
     }
 
-    private long resolveVacuumIntervalTicks(FarmHelperConfig config) {
+    private long resolveVacuumIntervalTicks(FeatureRuntimeState runtime, FarmHelperConfig config) {
         int configuredTrackPersist = config == null ? 30 : Math.max(20, config.pestsDestroyerOnTrackPersistTicks);
-        return Math.max(50L, configuredTrackPersist * 2L);
+        long trackerCooldownTicks = runtime == null
+                ? 20L
+                : Math.max(4L, Math.round(Math.max(0.2, runtime.vacuumTrackerCooldownSeconds) * 20.0));
+        long persistDriven = Math.max(12L, configuredTrackPersist / 2L);
+        return Math.max(12L, Math.max(persistDriven, trackerCooldownTicks));
+    }
+
+    private void setVacuumUse(long tick, boolean enabled) {
+        if (vacuumUseHeld == enabled) {
+            return;
+        }
+        queueSetUseKey(enabled, tick);
+        vacuumUseHeld = enabled;
+    }
+
+    private void releaseVacuumUse(long tick) {
+        if (!vacuumUseHeld) {
+            return;
+        }
+        queueSetUseKey(false, tick);
+        vacuumUseHeld = false;
     }
 }

@@ -36,13 +36,23 @@ public final class DebugHudRenderer {
         String line3 = String.format(Locale.US, "Vel: %.3f %.3f %.3f", snapshot.velocityX, snapshot.verticalVelocity, snapshot.velocityZ);
         String line4 = String.format(Locale.US, "BPS %.2f | TPS %.1f | Lag %s", snapshot.horizontalSpeedBps, snapshot.estimatedServerTps, snapshot.networkLagging ? "YES" : "NO");
         String line5 = "Queue " + FarmHelperFabric.getClientActionQueue().size() + " | Screen \"" + snapshot.screenTitle + "\"";
+        String line6 = String.format(
+                Locale.US,
+                "Vacuum %.1fm | DPS %.0f | Tracker %.1fs",
+                snapshot.vacuumRange,
+                snapshot.vacuumDps,
+                snapshot.vacuumTrackerCooldownSeconds
+        );
+        String line7 = "Plots current=" + snapshot.currentPlot + " gui=" + snapshot.guiInfestedPlot + " most=" + snapshot.mostInfestedPlot + " pests=" + snapshot.pestsInTablist;
         int width = Math.max(client.textRenderer.getWidth("Debug HUD"), client.textRenderer.getWidth(line1));
         width = Math.max(width, client.textRenderer.getWidth(line2));
         width = Math.max(width, client.textRenderer.getWidth(line3));
         width = Math.max(width, client.textRenderer.getWidth(line4));
         width = Math.max(width, client.textRenderer.getWidth(line5));
+        width = Math.max(width, client.textRenderer.getWidth(line6));
+        width = Math.max(width, client.textRenderer.getWidth(line7));
         int panelWidth = width + 10;
-        int panelHeight = 6 * 10 + 8;
+        int panelHeight = 8 * 10 + 8;
         drawContext.fill(x - 4, y - 4, x - 4 + panelWidth, y - 4 + panelHeight, 0x78101824);
         drawContext.fill(x - 5, y - 5, x - 4 + panelWidth + 1, y - 4, 0xA03A4A64);
         drawContext.fill(x - 5, y - 4 + panelHeight, x - 4 + panelWidth + 1, y - 3 + panelHeight, 0xA03A4A64);
@@ -58,5 +68,9 @@ public final class DebugHudRenderer {
         drawContext.drawText(client.textRenderer, line4, x, y, snapshot.networkLagging ? 0xFFFF5555 : 0xFFFFFFFF, true);
         y += 10;
         drawContext.drawText(client.textRenderer, line5, x, y, 0xFFFFFFFF, true);
+        y += 10;
+        drawContext.drawText(client.textRenderer, line6, x, y, 0xFF9FE2FF, true);
+        y += 10;
+        drawContext.drawText(client.textRenderer, line7, x, y, 0xFFD6E8FF, true);
     }
 }

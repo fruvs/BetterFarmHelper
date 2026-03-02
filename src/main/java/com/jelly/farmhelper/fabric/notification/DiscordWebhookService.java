@@ -199,7 +199,7 @@ public class DiscordWebhookService {
                 : featureState.activeFailsafe.get().name();
         return String.format(Locale.US,
                 "macro=%s state=%s rtTicks=%d pos=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f queue=%d screen=\"%s\" failsafe=%s nearSpawn=%s nearRewarp=%s "
-                        + "cfg[macroType=%s pattern=%s scheduler=%s visitors=%s pests=%s pestExchange=%s bazaar=%s autoSell=%s failsafe=%s rewarpPts=%d]",
+                        + "vacuum[range=%.1f dps=%.0f cd=%.1fs] cfg[macroType=%s pattern=%s scheduler=%s visitors=%s pests=%s pestExchange=%s bazaar=%s autoSell=%s failsafe=%s rewarpPts=%d]",
                 snapshot.macroToggled,
                 snapshot.macroState,
                 snapshot.macroRuntimeTicks,
@@ -210,6 +210,9 @@ public class DiscordWebhookService {
                 failsafe,
                 snapshot.nearSpawnPoint,
                 snapshot.nearRewarpPoint,
+                snapshot.vacuumRange,
+                snapshot.vacuumDps,
+                snapshot.vacuumTrackerCooldownSeconds,
                 config.macroType,
                 config.macroPattern,
                 config.enableScheduler,

@@ -6,7 +6,9 @@ import net.minecraft.client.Mouse;
 import net.minecraft.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Mouse.class)
 public class MouseFreelookMixin {
@@ -26,5 +28,19 @@ public class MouseFreelookMixin {
             return;
         }
         entity.changeLookDirection(deltaX, deltaY);
+    }
+
+    @Inject(method = "onMouseScroll", at = @At("HEAD"), cancellable = true, require = 0)
+    private void farmhelper$consumeScrollForFreelook(long window, double horizontal, double vertical, CallbackInfo ci) {
+        FreelookController controller = FreelookController.getInstance();
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || !controller.isActive()) {
+            return;
+        }
+        if (client.currentScreen != null) {
+            return;
+        }
+        controller.adjustDistance(vertical);
+        ci.cancel();
     }
 }

@@ -23,7 +23,7 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
     }
 
     private static final String PEST_NAMES =
-            "beetle,cricket,earthworm,fly,locust,mite,mosquito,moth,rat,slug,praying mantis,firefly,dragonfly,pest";
+            "beetle,cricket,earthworm,fly,locust,mite,mosquito,moth,rat,slug,praying mantis,firefly,dragonfly";
 
     private State state = State.IDLE;
     private long stateSinceTick;
@@ -33,11 +33,14 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
     private long pestSweepUntilTick = -1L;
     private long spawnCommandAtTick = -1L;
     private long warpCommandAtTick = -1L;
+    private long lastParticleProbeTick = -1L;
     private int retries;
     private boolean spawnConfirmed;
     private boolean spawnRejected;
     private boolean warpBackConfirmed;
     private boolean warpBackRejected;
+    private boolean vacuumUseHeld;
+    private double activeVacuumRange = 5.0;
 
     public PestFarmerFeatureModule(boolean enabled) {
         super("pest_farmer", "Pest Farmer", enabled);
@@ -46,6 +49,7 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
     @Override
     public void onDisable() {
         super.onDisable();
+        releaseVacuumUse(0L);
         resetState();
         spawnConfirmed = false;
         spawnRejected = false;
@@ -56,6 +60,7 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
     @Override
     public void onDisconnect() {
         super.onDisconnect();
+        releaseVacuumUse(0L);
         resetState();
         spawnConfirmed = false;
         spawnRejected = false;
@@ -67,6 +72,7 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
     public void cancelActiveAction(String reason) {
         super.cancelActiveAction(reason);
         lastRunTick = -1L;
+        releaseVacuumUse(0L);
         spawnConfirmed = false;
         spawnRejected = false;
         warpBackConfirmed = false;
@@ -116,9 +122,19 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
     public void onTick(FeatureRuntimeState runtime) {
         FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
         if (!config.pestFarmer || runtime.activeFailsafe.isPresent()) {
+            if (isActionRunning()) {
+                releaseVacuumUse(runtime.tickCount);
+                endTimedAction("pest farmer paused");
+                resetState();
+            }
             return;
         }
         if (!runtime.macroToggled || runtime.macroState != MacroState.FARMING) {
+            if (isActionRunning()) {
+                releaseVacuumUse(runtime.tickCount);
+                endTimedAction("pest farmer stopped");
+                resetState();
+            }
             return;
         }
 
@@ -127,6 +143,7 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
             return;
         }
         if (shouldEndAction(runtime.tickCount)) {
+            releaseVacuumUse(runtime.tickCount);
             endTimedAction("pest farmer timeout");
             lastRunTick = runtime.tickCount;
             resetState();
@@ -253,12 +270,20 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
                     pestSweepUntilTick = runtime.tickCount + Math.max(80L, secondsToTicks(Math.max(3, config.pestFarmerWaitSeconds)));
                     if (config.pestFarmerKillPests) {
                         queueSelectHotbarItem("vacuum", runtime.tickCount);
-                        queueUseHeldItem(runtime.tickCount);
-                        queueAttackNearestEntity(PEST_NAMES, 8.5, 90L, runtime.tickCount);
+                        activeVacuumRange = resolveVacuumRangeFromRuntime(runtime);
+                        setVacuumUse(runtime.tickCount, true);
+                        queueAttackNearestEntity(PEST_NAMES, Math.max(3.8, activeVacuumRange), 90L, runtime.tickCount);
                     }
                 }
-                if (config.pestFarmerKillPests && ticksInState(runtime.tickCount) > 0 && ticksInState(runtime.tickCount) % 24L == 0) {
-                    queueAttackNearestEntity(PEST_NAMES, 8.5, 90L, runtime.tickCount);
+                if (config.pestFarmerKillPests && ticksInState(runtime.tickCount) > 0 && ticksInState(runtime.tickCount) % 18L == 0) {
+                    queueAttackNearestEntity(PEST_NAMES, Math.max(3.8, activeVacuumRange), 90L, runtime.tickCount);
+                }
+                if (config.pestFarmerKillPests
+                        && ticksInState(runtime.tickCount) > 0
+                        && ticksInState(runtime.tickCount) % 24L == 0
+                        && runtime.tickCount - lastParticleProbeTick >= 24L) {
+                    queueTapAttackKey(runtime.tickCount);
+                    lastParticleProbeTick = runtime.tickCount;
                 }
                 if (runtime.tickCount >= pestSweepUntilTick) {
                     retries = 0;
@@ -345,6 +370,7 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
                 }
             }
             case FINISH -> {
+                releaseVacuumUse(runtime.tickCount);
                 endTimedAction("pest farmer cycle complete");
                 lastRunTick = runtime.tickCount;
                 pestSpawnedAtMs = -1L;
@@ -364,6 +390,9 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
     }
 
     private void setState(State next, long nowTick) {
+        if (state == State.KILL_PESTS && next != State.KILL_PESTS) {
+            releaseVacuumUse(nowTick);
+        }
         if (next != State.SET_SPAWN) {
             spawnCommandAtTick = -1L;
         }
@@ -381,6 +410,32 @@ public class PestFarmerFeatureModule extends MacroExclusiveFeatureModule {
         pestSweepUntilTick = -1L;
         spawnCommandAtTick = -1L;
         warpCommandAtTick = -1L;
+        lastParticleProbeTick = -1L;
         retries = 0;
+        activeVacuumRange = 5.0;
+        vacuumUseHeld = false;
+    }
+
+    private double resolveVacuumRangeFromRuntime(FeatureRuntimeState runtime) {
+        if (runtime != null && runtime.vacuumRange > 0) {
+            return runtime.vacuumRange;
+        }
+        return 5.0;
+    }
+
+    private void setVacuumUse(long tick, boolean enabled) {
+        if (vacuumUseHeld == enabled) {
+            return;
+        }
+        queueSetUseKey(enabled, tick);
+        vacuumUseHeld = enabled;
+    }
+
+    private void releaseVacuumUse(long tick) {
+        if (!vacuumUseHeld) {
+            return;
+        }
+        queueSetUseKey(false, tick);
+        vacuumUseHeld = false;
     }
 }

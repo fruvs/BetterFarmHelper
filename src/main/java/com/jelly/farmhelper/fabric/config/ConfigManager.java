@@ -244,6 +244,12 @@ public class ConfigManager {
         if (loaded.pestsDestroyerOnTrackFov <= 0) {
             loaded.pestsDestroyerOnTrackFov = 95;
         }
+        if (loaded.pestsAimDeadzoneYaw <= 0f) {
+            loaded.pestsAimDeadzoneYaw = 4.5f;
+        }
+        if (loaded.pestsAimDeadzonePitch <= 0f) {
+            loaded.pestsAimDeadzonePitch = 3.0f;
+        }
         if (loaded.pestFarmerWaitSeconds <= 0) {
             loaded.pestFarmerWaitSeconds = 8;
         }

@@ -44,6 +44,9 @@ public class RuntimeSnapshot {
     public boolean godPotionActive;
     public boolean cookieBuffActive;
     public boolean pestRepellentActive;
+    public double vacuumRange;
+    public double vacuumDps;
+    public double vacuumTrackerCooldownSeconds;
     public double purse;
     public double bits;
     public double copper;
@@ -94,6 +97,9 @@ public class RuntimeSnapshot {
         snapshot.godPotionActive = godPotionActive;
         snapshot.cookieBuffActive = cookieBuffActive;
         snapshot.pestRepellentActive = pestRepellentActive;
+        snapshot.vacuumRange = vacuumRange;
+        snapshot.vacuumDps = vacuumDps;
+        snapshot.vacuumTrackerCooldownSeconds = vacuumTrackerCooldownSeconds;
         snapshot.purse = purse;
         snapshot.bits = bits;
         snapshot.copper = copper;
