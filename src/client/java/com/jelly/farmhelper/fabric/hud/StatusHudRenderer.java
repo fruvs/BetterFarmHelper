@@ -9,6 +9,7 @@ import com.jelly.farmhelper.fabric.feature.module.LagDetectorFeatureModule;
 import com.jelly.farmhelper.fabric.feature.module.SchedulerFeatureModule;
 import com.jelly.farmhelper.fabric.feature.module.UsageStatsFeatureModule;
 import com.jelly.farmhelper.fabric.macro.MacroState;
+import com.jelly.farmhelper.fabric.state.GameStateHandler;
 import com.jelly.farmhelper.fabric.util.RenderUtils;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -25,6 +26,9 @@ public final class StatusHudRenderer {
             return;
         }
         if (client.getDebugHud().shouldShowDebugHud()) {
+            return;
+        }
+        if (FarmHelperFabricClient.getGameStateHandler().getLocation() != GameStateHandler.Location.GARDEN) {
             return;
         }
         FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();

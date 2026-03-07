@@ -361,10 +361,43 @@ public final class PlayerUtils {
         if (client == null || client.player == null) {
             return false;
         }
+        if (FarmHelperFabric.getFailsafeManager().hasActiveFailsafe()) {
+            return false;
+        }
+        FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
+        LegacyMacroType macroType = config == null || config.macroType == null
+                ? LegacyMacroType.S_V_NORMAL_TYPE
+                : config.macroType;
+        if (macroType == LegacyMacroType.S_CACTUS
+                || macroType == LegacyMacroType.S_CACTUS_SUNTZU
+                || macroType == LegacyMacroType.S_PUMPKIN_MELON
+                || macroType == LegacyMacroType.S_PUMPKIN_MELON_DEFAULT_PLOT
+                || macroType == LegacyMacroType.S_COCOA_BEANS_LEFT_RIGHT) {
+            return false;
+        }
+
         ClientPlayerEntity player = client.player;
-        float yaw = AngleUtils.closestCardinal(player.getYaw());
+        float angle = AngleUtils.closestCardinal(player.getYaw());
+        float yaw = config != null && config.customYaw
+                ? AngleUtils.closestCardinal(config.customYawLevel)
+                : angle;
         BlockPos ahead = BlockUtils.relativeBlockPos(player, 0, 0, 1, yaw);
-        return BlockUtils.canWalkThrough(client, ahead);
+        if (BlockUtils.canWalkThrough(client, ahead)) {
+            return false;
+        }
+
+        double x = player.getX() % 1.0;
+        double z = player.getZ() % 1.0;
+        if (angle == 0.0f) {
+            return (z > -0.9 && z < -0.35) || (z < 0.65 && z > 0.1);
+        } else if (angle == 90.0f) {
+            return (x > -0.65 && x < -0.1) || (x < 0.9 && x > 0.35);
+        } else if (angle == 180.0f) {
+            return (z > -0.65 && z < -0.1) || (z < 0.9 && z > 0.35);
+        } else if (angle == 270.0f) {
+            return (x > -0.9 && x < -0.35) || (x < 0.65 && x > 0.1);
+        }
+        return false;
     }
 
     public static boolean isPlayerSuffocating(MinecraftClient client) {

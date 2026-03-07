@@ -39,12 +39,12 @@ public class ClientAutomationExecutor {
     private static final int DEFAULT_RETRIES = 3;
     private static final float YAW_STEP = 12f;
     private static final float PITCH_STEP = 8f;
-    private static final float PEST_YAW_STEP_MIN = 3.5f;
-    private static final float PEST_YAW_STEP_MAX = 8.5f;
-    private static final float PEST_PITCH_STEP_MIN = 2.0f;
-    private static final float PEST_PITCH_STEP_MAX = 5.0f;
-    private static final float PEST_AIM_LAG_ALPHA = 0.38f;
-    private static final double PEST_AIM_JITTER = 0.10;
+    private static final float PEST_YAW_STEP_MIN = 1.8f;
+    private static final float PEST_YAW_STEP_MAX = 4.6f;
+    private static final float PEST_PITCH_STEP_MIN = 1.0f;
+    private static final float PEST_PITCH_STEP_MAX = 3.0f;
+    private static final float PEST_AIM_LAG_ALPHA = 0.22f;
+    private static final double PEST_AIM_JITTER = 0.04;
     private static final float PEST_DEADZONE_YAW_FALLBACK = 4.5f;
     private static final float PEST_DEADZONE_PITCH_FALLBACK = 3.0f;
     private static final long RETRY_INTERVAL_TICKS = 12L;
@@ -384,20 +384,21 @@ public class ClientAutomationExecutor {
                 action.pestConsecutiveNoTargetTicks++;
                 debugThink(action, nowTick, "pest target lost, scanning plot");
                 if (tickPestSearchFallback(client, action, nowTick)) {
-                    if (action.pestConsecutiveNoTargetTicks >= 28L) {
+                    if (action.pestConsecutiveNoTargetTicks >= 52L) {
                         return true;
                     }
                     return false;
                 }
                 long probeInterval = resolvePestProbeIntervalTicks();
-                if (nowTick - action.entityInteractionLastHitTick >= probeInterval) {
+                if (action.pestConsecutiveNoTargetTicks >= 20L
+                        && nowTick - action.pestLastTrackerProbeTick >= probeInterval) {
                     KeyBindUtils.leftClick(client);
-                    action.entityInteractionLastHitTick = nowTick;
+                    action.pestLastTrackerProbeTick = nowTick;
                 }
-                if (action.entityInteractionHits > 0 && action.pestConsecutiveNoTargetTicks >= 12L) {
+                if (action.entityInteractionHits > 0 && action.pestConsecutiveNoTargetTicks >= 24L) {
                     return true;
                 }
-                if (action.pestConsecutiveNoTargetTicks >= 30L) {
+                if (action.pestConsecutiveNoTargetTicks >= 70L) {
                     return true;
                 }
             }
@@ -889,8 +890,18 @@ public class ClientAutomationExecutor {
             return;
         }
 
-        float yawStep = (float) randomBetween(PEST_YAW_STEP_MIN, PEST_YAW_STEP_MAX);
-        float pitchStep = (float) randomBetween(PEST_PITCH_STEP_MIN, PEST_PITCH_STEP_MAX);
+        float yawStepBase = MathHelper.clamp(yawDelta * 0.32f, PEST_YAW_STEP_MIN, PEST_YAW_STEP_MAX);
+        float pitchStepBase = MathHelper.clamp(pitchDelta * 0.28f, PEST_PITCH_STEP_MIN, PEST_PITCH_STEP_MAX);
+        float yawStep = MathHelper.clamp(
+                (float) (yawStepBase + randomBetween(-0.35, 0.35)),
+                PEST_YAW_STEP_MIN,
+                PEST_YAW_STEP_MAX
+        );
+        float pitchStep = MathHelper.clamp(
+                (float) (pitchStepBase + randomBetween(-0.25, 0.25)),
+                PEST_PITCH_STEP_MIN,
+                PEST_PITCH_STEP_MAX
+        );
         float yaw = approachAngle(client.player.getYaw(), targetYaw, yawStep);
         float pitch = approach(client.player.getPitch(), targetPitch, pitchStep);
         client.player.setYaw(yaw);
@@ -1269,6 +1280,7 @@ public class ClientAutomationExecutor {
         private int entityInteractionHits;
         private long pestConsecutiveNoTargetTicks;
         private long pestLastSeenTick;
+        private long pestLastTrackerProbeTick;
         private Vec3d pestSmoothedTarget;
         private int pestSearchWaypointIndex;
         private long pestSearchLastAdvanceTick;
@@ -1289,6 +1301,7 @@ public class ClientAutomationExecutor {
             this.entityInteractionHits = 0;
             this.pestConsecutiveNoTargetTicks = 0L;
             this.pestLastSeenTick = startTick;
+            this.pestLastTrackerProbeTick = startTick - 40L;
             this.pestSmoothedTarget = null;
             this.pestSearchWaypointIndex = 0;
             this.pestSearchLastAdvanceTick = startTick;

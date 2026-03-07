@@ -29,23 +29,11 @@ public class HudEditorScreen extends Screen {
 
     @Override
     protected void init() {
-        int buttonY = height - 30;
-        addSimpleButton(width / 2 - 188, buttonY, 120, "Reset Status", btn -> {
-            config.statusHudX = 8;
-            config.statusHudY = 8;
-            saveConfig();
-        });
-        addSimpleButton(width / 2 - 62, buttonY, 120, "Reset Profit", btn -> {
-            config.profitHudX = 8;
-            config.profitHudY = 170;
-            saveConfig();
-        });
-        addSimpleButton(width / 2 + 64, buttonY, 120, "Reset Debug", btn -> {
-            config.debugHudX = 8;
-            config.debugHudY = 250;
-            saveConfig();
-        });
-        addSimpleButton(width - 90, 10, 76, "Back", btn -> close());
+        int buttonWidth = 120;
+        int buttonHeight = 20;
+        int buttonX = (width - buttonWidth) / 2;
+        int buttonY = height - buttonHeight - 8;
+        addSimpleButton(buttonX, buttonY, buttonWidth, "Done", btn -> close());
     }
 
     @Override
@@ -59,14 +47,11 @@ public class HudEditorScreen extends Screen {
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         renderBackground(context, mouseX, mouseY, delta);
-        super.render(context, mouseX, mouseY, delta);
-        context.drawText(textRenderer, Text.literal("FarmHelper HUD Editor"), 16, 12, 0xFFE9EEF8, false);
-        context.drawText(textRenderer, Text.literal("Drag each HUD box with your mouse to reposition."), 16, 24, 0xFFABB7C8, false);
-        context.drawText(textRenderer, Text.literal("Preview boxes"), 16, height - 24, 0xFFABB7C8, false);
 
         drawHudBox(context, DragTarget.STATUS, clampX(config.statusHudX, BOX_WIDTH), clampY(config.statusHudY, STATUS_BOX_HEIGHT), BOX_WIDTH, STATUS_BOX_HEIGHT, "Status HUD", 0x7A1B2432, 0xFF6CC6FF, mouseX, mouseY);
         drawHudBox(context, DragTarget.PROFIT, clampX(config.profitHudX, BOX_WIDTH), clampY(config.profitHudY, PROFIT_BOX_HEIGHT), BOX_WIDTH, PROFIT_BOX_HEIGHT, "Profit HUD", 0x7A1F2C24, 0xFF8CD5A8, mouseX, mouseY);
         drawHudBox(context, DragTarget.DEBUG, clampX(config.debugHudX, BOX_WIDTH), clampY(config.debugHudY, DEBUG_BOX_HEIGHT), BOX_WIDTH, DEBUG_BOX_HEIGHT, "Debug HUD", 0x7A2A1E24, 0xFFFFAA55, mouseX, mouseY);
+        super.render(context, mouseX, mouseY, delta);
     }
 
     private ButtonWidget addSimpleButton(int x, int y, int width, String text, ButtonWidget.PressAction action) {

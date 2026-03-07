@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 public class FarmHelperConfig {
-    public int schemaVersion = 8;
+    public int schemaVersion = 11;
 
     // Keybind defaults use GLFW keycodes.
     public int toggleMacroKey = GLFW.GLFW_KEY_GRAVE_ACCENT;
@@ -104,6 +104,12 @@ public class FarmHelperConfig {
     public boolean enablePacketFailsafeChecks = true;
     public float minBpsThreshold = 10f;
     public boolean enableFailsafeSound = true;
+    public boolean enableFailsafeBanner = true;
+    public boolean failsafeBannerShowReason = true;
+    public boolean enableFailsafeAnvilAlert = true;
+    public int failsafeAnvilAlertIntervalTicks = 12;
+    public float failsafeAnvilAlertVolume = 1.0f;
+    public int desktopNotificationCooldownSeconds = 20;
     public boolean restartAfterFailsafe = true;
     public int restartAfterFailsafeDelayMinutes = 0;
     public boolean enableJacobFailsafe = false;
@@ -161,6 +167,7 @@ public class FarmHelperConfig {
     public boolean pestsDestroyerAfkInfiniteMode = false;
     public int pestsDestroyerMaxPasses = 3;
     public int pestsDestroyerRetryLimit = 3;
+    public boolean pestsDestroyerDisableDuringJacobsContest = true;
     public boolean pestsDestroyerStartOnlyOnRewarpOrSpawn = false;
     public boolean pestsDestroyerOnTheTrack = false;
     public int pestsDestroyerOnTrackPersistTicks = 30;

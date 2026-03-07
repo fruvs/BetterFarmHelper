@@ -8,6 +8,9 @@ import com.jelly.farmhelper.fabric.runtime.RuntimeSnapshot;
 import java.util.Optional;
 
 public class InventoryFullDetector implements FailsafeDetector {
+    private long fullSinceTick = -1L;
+    private boolean latched;
+
     @Override
     public FailsafeType type() {
         return FailsafeType.FULL_INVENTORY;
@@ -15,12 +18,34 @@ public class InventoryFullDetector implements FailsafeDetector {
 
     @Override
     public Optional<String> detect(RuntimeSnapshot snapshot, FarmHelperConfig config, DetectorState state) {
-        if (snapshot.macroState != MacroState.FARMING) {
+        if (snapshot.macroState != MacroState.FARMING || !config.enableAutoSell) {
+            fullSinceTick = -1L;
+            latched = false;
             return Optional.empty();
         }
-        if (snapshot.inventoryFillPercent >= 95) {
-            return Optional.of("Inventory nearly full (" + snapshot.inventoryFillPercent + "%)");
+
+        int threshold = Math.max(1, Math.min(100, config.inventoryFullRatio));
+        if (snapshot.inventoryFillPercent < threshold) {
+            fullSinceTick = -1L;
+            latched = false;
+            return Optional.empty();
         }
-        return Optional.empty();
+
+        if (latched) {
+            return Optional.empty();
+        }
+
+        if (fullSinceTick < 0L) {
+            fullSinceTick = snapshot.tickCount;
+            return Optional.empty();
+        }
+
+        long sustainedTicks = Math.max(20L, config.inventoryFullTimeSeconds * 20L);
+        if (snapshot.tickCount - fullSinceTick < sustainedTicks) {
+            return Optional.empty();
+        }
+
+        latched = true;
+        return Optional.of("Inventory nearly full (" + snapshot.inventoryFillPercent + "%) and auto-sell did not clear it");
     }
 }

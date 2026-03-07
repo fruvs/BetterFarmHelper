@@ -179,9 +179,11 @@ public final class FarmHelperClientCommands {
                                         Chat.info("Rewarp point already exists at this location");
                                         return 1;
                                     }
+                                    point.normalizeInPlace(FarmHelperFabric.getConfigManager().getConfig().rewarpPoints.size() + 1);
                                     FarmHelperFabric.getConfigManager().getConfig().rewarpPoints.add(point);
                                     FarmHelperFabric.getConfigManager().save();
-                                    Chat.info("Added rewarp point at " + point.x + " " + point.y + " " + point.z);
+                                    Chat.info("Added rewarp point " + point.displayName(FarmHelperFabric.getConfigManager().getConfig().rewarpPoints.size())
+                                            + " at " + point.x + " " + point.y + " " + point.z);
                                     return 1;
                                 }))
                         .then(literal("remove")
@@ -217,7 +219,17 @@ public final class FarmHelperClientCommands {
                                     StringBuilder line = new StringBuilder("Rewarp points: ");
                                     for (int i = 0; i < FarmHelperFabric.getConfigManager().getConfig().rewarpPoints.size(); i++) {
                                         RewarpPoint point = FarmHelperFabric.getConfigManager().getConfig().rewarpPoints.get(i);
-                                        line.append("#").append(i + 1).append("(").append(point.x).append(",").append(point.y).append(",").append(point.z).append(")");
+                                        line.append("#")
+                                                .append(i + 1)
+                                                .append(":")
+                                                .append(point.displayName(i + 1))
+                                                .append("(")
+                                                .append(point.x)
+                                                .append(",")
+                                                .append(point.y)
+                                                .append(",")
+                                                .append(point.z)
+                                                .append(")");
                                         if (i + 1 < FarmHelperFabric.getConfigManager().getConfig().rewarpPoints.size()) {
                                             line.append(" ");
                                         }

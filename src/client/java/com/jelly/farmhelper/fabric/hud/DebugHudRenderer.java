@@ -4,6 +4,7 @@ import com.jelly.farmhelper.fabric.FarmHelperFabric;
 import com.jelly.farmhelper.fabric.FarmHelperFabricClient;
 import com.jelly.farmhelper.fabric.config.FarmHelperConfig;
 import com.jelly.farmhelper.fabric.runtime.RuntimeSnapshot;
+import com.jelly.farmhelper.fabric.state.GameStateHandler;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
@@ -20,6 +21,9 @@ public final class DebugHudRenderer {
             return;
         }
         if (client.getDebugHud().shouldShowDebugHud()) {
+            return;
+        }
+        if (FarmHelperFabricClient.getGameStateHandler().getLocation() != GameStateHandler.Location.GARDEN) {
             return;
         }
 

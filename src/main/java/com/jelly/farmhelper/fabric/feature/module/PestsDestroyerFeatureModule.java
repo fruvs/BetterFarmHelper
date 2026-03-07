@@ -56,7 +56,6 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
     private boolean seenKillSignalThisPass;
     private boolean manualTriggerRequested;
     private double activeVacuumRange = 5.0;
-    private long lastParticleProbeTick = -1L;
     private boolean vacuumUseHeld;
 
     public PestsDestroyerFeatureModule(boolean enabled) {
@@ -65,7 +64,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
 
     public void requestManualTrigger() {
         FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
-        int threshold = Math.max(1, config.startKillingPestsAt);
+        int threshold = Math.max(1, Math.min(8, config.startKillingPestsAt));
         queuedPests = Math.max(queuedPests, threshold);
         manualTriggerRequested = true;
         RuntimeGuards.clearGlobalStopLatch();
@@ -118,6 +117,20 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         if (runtime.guiInfestedPlot > 0) {
             lastKnownInfestedPlot = runtime.guiInfestedPlot;
         }
+        if (config.pestsDestroyerDisableDuringJacobsContest && runtime.jacobContestActive) {
+            if (isActionRunning()) {
+                FarmHelperFabric.getWebhookService().sendFeatureLog(
+                        "Pests Destroyer stopped: Jacob's Contest is active"
+                );
+                endTimedAction("jacob contest active");
+                closeScreenIfOpen(runtime, runtime.tickCount);
+            }
+            queuedPests = Math.max(0, runtime.pestsInTablist);
+            manualTriggerRequested = false;
+            releaseVacuumUse(runtime.tickCount);
+            resetState();
+            return;
+        }
         if (runtime.activeFailsafe.isPresent()) {
             if (isActionRunning()) {
                 releaseVacuumUse(runtime.tickCount);
@@ -159,7 +172,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         }
 
         queuedPests = Math.max(queuedPests, Math.max(0, runtime.pestsInTablist));
-        int threshold = Math.max(1, config.startKillingPestsAt);
+        int threshold = Math.max(1, Math.min(8, config.startKillingPestsAt));
         if (!manualTriggerRequested && queuedPests < threshold) {
             return;
         }
@@ -456,14 +469,6 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                 } else if (runtime.tickCount >= nextHuntTick) {
                     nextHuntTick = runtime.tickCount + 6L;
                 }
-                if (!seenKillSignalThisPass
-                        && queueReady
-                        && runtime.tickCount - lastParticleProbeTick >= Math.max(4L, Math.round(Math.max(0.2, runtime.vacuumTrackerCooldownSeconds) * 20.0))
-                        && (lastVacuumUseTick < 0 || runtime.tickCount - lastVacuumUseTick >= 10L)) {
-                    queueTapAttackKey(runtime.tickCount);
-                    lastParticleProbeTick = runtime.tickCount;
-                }
-
                 long huntTicks = secondsToTicks(Math.max(4, config.pestsDestroyerActionSeconds));
                 if (ticksInState(runtime.tickCount) >= huntTicks) {
                     setState(State.VERIFY_REMAINING, runtime.tickCount, true);
@@ -607,7 +612,6 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         seenKillSignalThisPass = false;
         manualTriggerRequested = false;
         activeVacuumRange = 5.0;
-        lastParticleProbeTick = -1L;
         vacuumUseHeld = false;
     }
 

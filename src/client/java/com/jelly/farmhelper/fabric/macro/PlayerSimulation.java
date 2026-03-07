@@ -21,15 +21,21 @@ public final class PlayerSimulation {
     private long pauseUntilTick = -1L;
     private long nextPauseCheckTick;
     private long nextJitterUpdateTick;
+    private long lastJitterAdvanceTick = -1L;
     private float yawOffset;
     private float pitchOffset;
+    private float yawOffsetTarget;
+    private float pitchOffsetTarget;
 
     public void reset() {
         pauseUntilTick = -1L;
         nextPauseCheckTick = 0L;
         nextJitterUpdateTick = 0L;
+        lastJitterAdvanceTick = -1L;
         yawOffset = 0f;
         pitchOffset = 0f;
+        yawOffsetTarget = 0f;
+        pitchOffsetTarget = 0f;
     }
 
     public MovementDecision adjustMovement(
@@ -107,20 +113,27 @@ public final class PlayerSimulation {
         if (config == null || !config.playerSimulationEnabled) {
             yawOffset = 0f;
             pitchOffset = 0f;
+            yawOffsetTarget = 0f;
+            pitchOffsetTarget = 0f;
             return;
         }
-        if (tick < nextJitterUpdateTick) {
-            return;
+        if (tick >= nextJitterUpdateTick) {
+            int minInterval = Math.max(8, config.playerSimulationJitterIntervalMinTicks);
+            int maxInterval = Math.max(minInterval, config.playerSimulationJitterIntervalMaxTicks);
+            nextJitterUpdateTick = tick + ThreadLocalRandom.current().nextInt(minInterval, maxInterval + 1);
+
+            float maxYaw = Math.max(0f, config.playerSimulationYawJitterDegrees);
+            float maxPitch = Math.max(0f, config.playerSimulationPitchJitterDegrees);
+            yawOffsetTarget = randomInRange(-maxYaw, maxYaw);
+            pitchOffsetTarget = randomInRange(-maxPitch, maxPitch);
         }
 
-        int minInterval = Math.max(8, config.playerSimulationJitterIntervalMinTicks);
-        int maxInterval = Math.max(minInterval, config.playerSimulationJitterIntervalMaxTicks);
-        nextJitterUpdateTick = tick + ThreadLocalRandom.current().nextInt(minInterval, maxInterval + 1);
-
-        float maxYaw = Math.max(0f, config.playerSimulationYawJitterDegrees);
-        float maxPitch = Math.max(0f, config.playerSimulationPitchJitterDegrees);
-        yawOffset = randomInRange(-maxYaw, maxYaw);
-        pitchOffset = randomInRange(-maxPitch, maxPitch);
+        if (lastJitterAdvanceTick == tick) {
+            return;
+        }
+        lastJitterAdvanceTick = tick;
+        yawOffset = approach(yawOffset, yawOffsetTarget, 0.18f);
+        pitchOffset = approach(pitchOffset, pitchOffsetTarget, 0.12f);
     }
 
     private float randomInRange(float min, float max) {
@@ -128,5 +141,13 @@ public final class PlayerSimulation {
             return min;
         }
         return (float) ThreadLocalRandom.current().nextDouble(min, max);
+    }
+
+    private float approach(float current, float target, float step) {
+        float delta = target - current;
+        if (Math.abs(delta) <= step) {
+            return target;
+        }
+        return current + Math.copySign(step, delta);
     }
 }

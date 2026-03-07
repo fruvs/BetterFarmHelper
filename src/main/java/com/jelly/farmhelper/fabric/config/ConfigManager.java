@@ -3,6 +3,7 @@ package com.jelly.farmhelper.fabric.config;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.jelly.farmhelper.fabric.FarmHelperFabric;
+import com.jelly.farmhelper.fabric.config.struct.RewarpPoint;
 import com.jelly.farmhelper.fabric.feature.FeatureCatalog;
 import com.jelly.farmhelper.fabric.macro.LegacyMacroType;
 import com.jelly.farmhelper.fabric.macro.LegacyMacroProfiles;
@@ -78,6 +79,16 @@ public class ConfigManager {
         }
         if (loaded.rewarpPoints == null) {
             loaded.rewarpPoints = new java.util.ArrayList<>();
+        } else {
+            java.util.ArrayList<RewarpPoint> sanitizedRewarpPoints = new java.util.ArrayList<>();
+            for (RewarpPoint point : loaded.rewarpPoints) {
+                if (point == null) {
+                    continue;
+                }
+                point.normalizeInPlace(sanitizedRewarpPoints.size() + 1);
+                sanitizedRewarpPoints.add(point);
+            }
+            loaded.rewarpPoints = sanitizedRewarpPoints;
         }
         if (loaded.stationaryFailsafeTicks <= 0) {
             loaded.stationaryFailsafeTicks = 200;
@@ -151,6 +162,7 @@ public class ConfigManager {
         if (loaded.startKillingPestsAt <= 0) {
             loaded.startKillingPestsAt = 3;
         }
+        loaded.startKillingPestsAt = Math.max(1, Math.min(8, loaded.startKillingPestsAt));
         if (loaded.autoPestExchangeMinPests <= 0) {
             loaded.autoPestExchangeMinPests = 10;
         }
@@ -196,6 +208,15 @@ public class ConfigManager {
         if (loaded.customFailsafeReactionMaxMs < loaded.customFailsafeReactionMinMs) {
             loaded.customFailsafeReactionMaxMs = loaded.customFailsafeReactionMinMs + 600;
         }
+        if (loaded.failsafeAnvilAlertIntervalTicks <= 0) {
+            loaded.failsafeAnvilAlertIntervalTicks = 12;
+        }
+        if (loaded.failsafeAnvilAlertVolume <= 0f) {
+            loaded.failsafeAnvilAlertVolume = 1.0f;
+        }
+        if (loaded.desktopNotificationCooldownSeconds < 0) {
+            loaded.desktopNotificationCooldownSeconds = 20;
+        }
         if (loaded.petSwapperActionSeconds <= 0) {
             loaded.petSwapperActionSeconds = 8;
         }
@@ -231,6 +252,9 @@ public class ConfigManager {
         }
         if (loaded.pestsDestroyerRetryLimit <= 0) {
             loaded.pestsDestroyerRetryLimit = 3;
+        }
+        if (loaded.schemaVersion < 10) {
+            loaded.pestsDestroyerDisableDuringJacobsContest = true;
         }
         if (loaded.pestsDestroyerOnTrackPersistTicks <= 0) {
             loaded.pestsDestroyerOnTrackPersistTicks = 30;
@@ -312,6 +336,14 @@ public class ConfigManager {
             loaded.pestExchangeDeskY = 71;
             loaded.pestExchangeDeskZ = -7;
         }
+        if (loaded.schemaVersion < 11) {
+            loaded.enableFailsafeBanner = true;
+            loaded.failsafeBannerShowReason = true;
+            loaded.enableFailsafeAnvilAlert = true;
+            loaded.failsafeAnvilAlertIntervalTicks = 12;
+            loaded.failsafeAnvilAlertVolume = 1.0f;
+            loaded.desktopNotificationCooldownSeconds = 20;
+        }
         if (loaded.featureToggles == null) {
             loaded.featureToggles = FarmHelperConfig.defaultFeatureToggles();
         } else {
@@ -319,7 +351,7 @@ public class ConfigManager {
                 loaded.featureToggles.putIfAbsent(definition.id(), false);
             }
         }
-        loaded.schemaVersion = Math.max(8, loaded.schemaVersion);
+        loaded.schemaVersion = Math.max(11, loaded.schemaVersion);
         return loaded;
     }
 }

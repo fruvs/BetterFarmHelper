@@ -12,6 +12,7 @@ import com.jelly.farmhelper.fabric.feature.module.AutoReconnectFeatureModule;
 import com.jelly.farmhelper.fabric.feature.module.PestsDestroyerFeatureModule;
 import com.jelly.farmhelper.fabric.handler.RotationHandler;
 import com.jelly.farmhelper.fabric.hud.DebugHudRenderer;
+import com.jelly.farmhelper.fabric.hud.FailsafeBannerRenderer;
 import com.jelly.farmhelper.fabric.hud.ProfitHudRenderer;
 import com.jelly.farmhelper.fabric.hud.StatusHudRenderer;
 import com.jelly.farmhelper.fabric.macro.MovementMacroExecutor;
@@ -24,6 +25,7 @@ import com.jelly.farmhelper.fabric.state.RuntimeGuards;
 import com.jelly.farmhelper.fabric.ui.FarmHelperYaclScreen;
 import com.jelly.farmhelper.fabric.util.AudioManager;
 import com.jelly.farmhelper.fabric.util.Chat;
+import com.jelly.farmhelper.fabric.util.DesktopNotifier;
 import com.jelly.farmhelper.fabric.util.FailsafeUtils;
 import com.jelly.farmhelper.fabric.util.InventoryUtils;
 import com.jelly.farmhelper.fabric.util.PlotUtils;
@@ -115,8 +117,10 @@ public class FarmHelperFabricClient implements ClientModInitializer {
     private long lastVoidRecoveryTick = -200L;
     private long lastSpawnRecoveryTick = -200L;
     private long lastRewarpTriggerTick = -400L;
+    private long lastAutoPestsRewarpCheckTick = -400L;
     private long worldJoinTick = -1L;
     private boolean postJoinAligned;
+    private boolean wasNearRewarpPoint;
     private String lastServerAddress = "";
     private String lastServerName = "Last Server";
     private int reconnectAttempts;
@@ -233,6 +237,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             StatusHudRenderer.render(drawContext, renderTickCounter);
             ProfitHudRenderer.render(drawContext, renderTickCounter);
             DebugHudRenderer.render(drawContext, renderTickCounter);
+            FailsafeBannerRenderer.render(drawContext, renderTickCounter);
         });
         WorldRenderEvents.END_MAIN.register(RenderUtils::renderWorld);
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
@@ -252,12 +257,14 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             }
             worldJoinTick = -1L;
             postJoinAligned = false;
+            wasNearRewarpPoint = false;
             reconnectCooldownUntilTick = tickCounter + 20L;
         });
         ClientPlayConnectionEvents.JOIN.register((handler, sender, c) -> {
             FarmHelperFabric.getFailsafeManager().onWorldChange();
             worldJoinTick = tickCounter;
             postJoinAligned = false;
+            wasNearRewarpPoint = false;
             reconnectAttempts = 0;
             reconnectCooldownUntilTick = -1L;
             MinecraftClient client = MinecraftClient.getInstance();
@@ -393,6 +400,10 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         boolean failsafeActiveNow = FarmHelperFabric.getFailsafeManager().hasActiveFailsafe();
         if (failsafeActiveNow && !failsafeActiveLastTick) {
             AudioManager.getInstance().playFailsafeAlert();
+            String activeFailsafe = FarmHelperFabric.getFailsafeManager().getActiveFailsafe()
+                    .map(Enum::name)
+                    .orElse("UNKNOWN");
+            DesktopNotifier.notifyFailsafe(activeFailsafe, FarmHelperFabric.getFailsafeManager().getActiveReason());
             if (FarmHelperFabric.getConfigManager().getConfig().autoAltTab) {
                 FailsafeUtils.bringWindowToFront();
             }
@@ -482,7 +493,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
     }
 
     public static Screen createConfigScreen(Screen parent) {
-        return FarmHelperYaclScreen.create(parent);
+        return new com.jelly.farmhelper.fabric.ui.FarmHelperModernConfigScreen(parent);
     }
 
     public static void requestGlobalStop() {
@@ -1176,12 +1187,27 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             return;
         }
 
-        if (isNearAnyRewarpPoint(client, config)
-                && GAME_STATE_TRACKER.getStationaryTicks() >= Math.max(14, config.stationaryFailsafeTicks / 2)
-                && tickCounter - lastRewarpTriggerTick >= rewarpDelayTicks(config)) {
+        RewarpPoint nearbyRewarpPoint = findNearbyRewarpPoint(client, config);
+        boolean nearRewarpPoint = nearbyRewarpPoint != null;
+        boolean enteredRewarpPoint = nearRewarpPoint && !wasNearRewarpPoint;
+        wasNearRewarpPoint = nearRewarpPoint;
+
+        if (enteredRewarpPoint) {
+            maybeTriggerAutoPestsAtRewarp(config);
+        }
+
+        if (nearRewarpPoint
+                && tickCounter - lastRewarpTriggerTick >= rewarpDelayTicks(config)
+                && (enteredRewarpPoint || GAME_STATE_TRACKER.getStationaryTicks() >= Math.max(14, config.stationaryFailsafeTicks / 2))) {
             lastRewarpTriggerTick = tickCounter;
             FarmHelperFabric.getFailsafeManager().suppressPacketChecks(140L, 100L, 40L, "rewarp point warp");
             FarmHelperFabric.getClientActionQueue().enqueueCommand("/warp garden", tickCounter);
+            FarmHelperFabric.getWebhookService().debugTrace(
+                    "macro",
+                    "rewarp triggered at "
+                            + nearbyRewarpPoint.displayName(1)
+                            + " (" + nearbyRewarpPoint.x + "," + nearbyRewarpPoint.y + "," + nearbyRewarpPoint.z + ")"
+            );
             return;
         }
 
@@ -1211,23 +1237,78 @@ public class FarmHelperFabricClient implements ClientModInitializer {
     }
 
     private boolean isNearAnyRewarpPoint(MinecraftClient client, FarmHelperConfig config) {
+        return findNearbyRewarpPoint(client, config) != null;
+    }
+
+    private RewarpPoint findNearbyRewarpPoint(MinecraftClient client, FarmHelperConfig config) {
         if (client.player == null || config.rewarpPoints == null || config.rewarpPoints.isEmpty()) {
-            return false;
+            return null;
         }
         int radius = Math.max(1, config.rewarpActivationRadius);
         BlockPos playerPos = client.player.getBlockPos();
+        RewarpPoint best = null;
+        int bestDistSq = Integer.MAX_VALUE;
+        int fallbackIndex = 1;
         for (RewarpPoint point : config.rewarpPoints) {
             if (point == null) {
+                fallbackIndex++;
                 continue;
             }
+            point.normalizeInPlace(fallbackIndex++);
             int dx = Math.abs(playerPos.getX() - point.x);
             int dy = Math.abs(playerPos.getY() - point.y);
             int dz = Math.abs(playerPos.getZ() - point.z);
             if (dx <= radius && dy <= Math.max(2, radius) && dz <= radius) {
-                return true;
+                int distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq < bestDistSq) {
+                    bestDistSq = distSq;
+                    best = point;
+                }
             }
         }
-        return false;
+        return best;
+    }
+
+    private void maybeTriggerAutoPestsAtRewarp(FarmHelperConfig config) {
+        if (tickCounter - lastAutoPestsRewarpCheckTick < 20L) {
+            return;
+        }
+        lastAutoPestsRewarpCheckTick = tickCounter;
+
+        boolean pestsFeatureEnabled = config.enablePestsDestroyer
+                || config.featureToggles.getOrDefault("pests_destroyer", false);
+        if (!pestsFeatureEnabled) {
+            return;
+        }
+        if (config.pestsDestroyerDisableDuringJacobsContest && GAME_STATE_HANDLER.isJacobContestActive()) {
+            FarmHelperFabric.getWebhookService().debugTrace("feature", "auto pests skipped: Jacob contest active");
+            return;
+        }
+
+        int threshold = Math.max(1, Math.min(8, config.startKillingPestsAt));
+        int detectedPests = Math.max(
+                Math.max(0, GAME_STATE_HANDLER.getTotalPests()),
+                Math.max(Math.max(0, RUNTIME_SNAPSHOT.pestsInTablist), Math.max(0, RUNTIME_SNAPSHOT.guiInfestedPests))
+        );
+        FarmHelperFabric.getWebhookService().debugTrace(
+                "feature",
+                "auto pests rewarp check pests=" + detectedPests + " threshold=" + threshold
+        );
+        if (detectedPests < threshold) {
+            return;
+        }
+
+        config.enablePestsDestroyer = true;
+        config.featureToggles.put("pests_destroyer", true);
+        FarmHelperFabric.getFeatureManager().setFeatureEnabled("pests_destroyer", true);
+        FarmHelperFabric.getFeatureManager().get("pests_destroyer")
+                .filter(PestsDestroyerFeatureModule.class::isInstance)
+                .map(PestsDestroyerFeatureModule.class::cast)
+                .ifPresent(PestsDestroyerFeatureModule::requestManualTrigger);
+        clearGlobalStopLatch();
+        FarmHelperFabric.getWebhookService().sendFeatureLog(
+                "Auto Pests trigger queued on rewarp (" + detectedPests + "/" + threshold + ")"
+        );
     }
 
     private long rewarpDelayTicks(FarmHelperConfig config) {
