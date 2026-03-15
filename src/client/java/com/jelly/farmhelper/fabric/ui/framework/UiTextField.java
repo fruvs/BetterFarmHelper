@@ -71,6 +71,7 @@ public class UiTextField extends UiComponent {
             return;
         }
         String toDraw = value.isEmpty() && !focused ? placeholder : value;
+        toDraw = client.textRenderer.trimToWidth(toDraw, Math.max(12, width - 12));
         int color = value.isEmpty() && !focused ? theme.textSecondary : theme.textPrimary;
         context.drawText(client.textRenderer, toDraw, x + 6, y + (height - 8) / 2, color, true);
     }

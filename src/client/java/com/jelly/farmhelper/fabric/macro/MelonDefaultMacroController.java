@@ -3,13 +3,10 @@ package com.jelly.farmhelper.fabric.macro;
 import com.jelly.farmhelper.fabric.config.FarmHelperConfig;
 import com.jelly.farmhelper.fabric.util.AngleUtils;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.util.math.MathHelper;
 
 import java.util.concurrent.ThreadLocalRandom;
 
 final class MelonDefaultMacroController implements LegacyMovementController {
-    private static final float MELON_SWITCH_ALIGN_TOLERANCE = 2.5f;
-    private static final float MELON_LANE_ALIGN_TOLERANCE = 2.5f;
     private final MovementMacroExecutor executor;
     private ChangeLaneDirection changeLaneDirection;
     private boolean switchOrientationFlipped;
@@ -169,34 +166,16 @@ final class MelonDefaultMacroController implements LegacyMovementController {
         MovementMacroExecutor.Walkability walkability = executor.computeWalkability(client, routingYaw);
         switch (state) {
             case RIGHT -> {
-                if (shouldPauseForRotation(client, MELON_LANE_ALIGN_TOLERANCE)) {
-                    executor.holdMovement(client, config, false, false, false, false, false, false);
-                    executor.setDirectionLabel("MELON_ALIGN");
-                    executor.legacyScheduleNotMoving(config);
-                    break;
-                }
                 boolean forward = !walkability.back();
                 executor.holdMovement(client, config, forward, false, false, true, false, true);
                 executor.setDirectionLabel("MELON_RIGHT");
             }
             case LEFT -> {
-                if (shouldPauseForRotation(client, MELON_LANE_ALIGN_TOLERANCE)) {
-                    executor.holdMovement(client, config, false, false, false, false, false, false);
-                    executor.setDirectionLabel("MELON_ALIGN");
-                    executor.legacyScheduleNotMoving(config);
-                    break;
-                }
                 boolean forward = !walkability.back();
                 executor.holdMovement(client, config, forward, false, true, false, false, true);
                 executor.setDirectionLabel("MELON_LEFT");
             }
             case SWITCHING_LANE -> {
-                if (shouldPauseForRotation(client, MELON_SWITCH_ALIGN_TOLERANCE)) {
-                    executor.holdMovement(client, config, false, false, false, false, false, false);
-                    executor.setDirectionLabel("MELON_SWITCH_ALIGN");
-                    executor.legacyScheduleNotMoving(config);
-                    break;
-                }
                 double velocity = 0.0;
                 if (client.player != null) {
                     velocity = Math.abs(client.player.getVelocity().x) + Math.abs(client.player.getVelocity().z);
@@ -231,14 +210,6 @@ final class MelonDefaultMacroController implements LegacyMovementController {
             case NONE -> executor.setDirectionLabel("MELON_IDLE");
             default -> executor.setDirectionLabel("MELON_IDLE");
         }
-    }
-
-    private boolean shouldPauseForRotation(MinecraftClient client, float toleranceDegrees) {
-        if (client == null || client.player == null) {
-            return false;
-        }
-        float yawDelta = Math.abs(MathHelper.wrapDegrees(executor.getTargetYaw() - client.player.getYaw()));
-        return yawDelta > toleranceDegrees;
     }
 
     private MovementMacroExecutor.LegacyRouteState calculateDirection(MinecraftClient client) {

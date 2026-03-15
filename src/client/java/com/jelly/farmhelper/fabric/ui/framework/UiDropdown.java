@@ -44,7 +44,7 @@ public class UiDropdown<E> extends UiComponent {
         if (client != null && client.textRenderer != null) {
             E current = getter.get();
             String valueText = current == null ? "N/A" : formatter.apply(current);
-            String draw = valueText + (open ? "  ^" : "  v");
+            String draw = client.textRenderer.trimToWidth(valueText + (open ? "  ^" : "  v"), Math.max(12, width - 12));
             context.drawText(client.textRenderer, Text.literal(draw), x + 8, y + (height - 8) / 2, theme.textPrimary, true);
         }
 
@@ -80,7 +80,7 @@ public class UiDropdown<E> extends UiComponent {
             }
 
             if (client != null && client.textRenderer != null) {
-                String text = formatter.apply(options[i]);
+                String text = client.textRenderer.trimToWidth(formatter.apply(options[i]), Math.max(12, width - 12));
                 context.drawText(client.textRenderer, Text.literal(text), x + 8, oy1 + 7, theme.textPrimary, false);
             }
         }

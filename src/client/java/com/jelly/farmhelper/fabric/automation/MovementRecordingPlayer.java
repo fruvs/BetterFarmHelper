@@ -117,7 +117,12 @@ public class MovementRecordingPlayer {
         setKey(client.options.attackKey, step.attack());
 
         if (client.player.getAbilities().allowFlying) {
-            client.player.getAbilities().flying = step.fly();
+            boolean wasFlying = client.player.getAbilities().flying;
+            boolean wantFlying = step.fly();
+            if (wasFlying != wantFlying) {
+                client.player.getAbilities().flying = wantFlying;
+                client.player.sendAbilitiesUpdate();
+            }
         }
         float targetYaw = MathHelper.wrapDegrees(step.yaw() + yawOffset);
         float targetPitch = MathHelper.clamp(step.pitch(), -90f, 90f);

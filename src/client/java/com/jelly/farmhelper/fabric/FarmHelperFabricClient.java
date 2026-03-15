@@ -8,6 +8,7 @@ import com.jelly.farmhelper.fabric.event.MillisecondEvent;
 import com.jelly.farmhelper.fabric.event.MotionUpdateEvent;
 import com.jelly.farmhelper.fabric.failsafe.FailsafeType;
 import com.jelly.farmhelper.fabric.feature.FeatureRuntimeState;
+import com.jelly.farmhelper.fabric.feature.VisitorOfferSnapshot;
 import com.jelly.farmhelper.fabric.feature.module.AutoReconnectFeatureModule;
 import com.jelly.farmhelper.fabric.feature.module.PestsDestroyerFeatureModule;
 import com.jelly.farmhelper.fabric.handler.RotationHandler;
@@ -22,12 +23,13 @@ import com.jelly.farmhelper.fabric.state.FreelookController;
 import com.jelly.farmhelper.fabric.state.GameStateHandler;
 import com.jelly.farmhelper.fabric.state.GameStateTracker;
 import com.jelly.farmhelper.fabric.state.RuntimeGuards;
-import com.jelly.farmhelper.fabric.ui.FarmHelperYaclScreen;
 import com.jelly.farmhelper.fabric.util.AudioManager;
+import com.jelly.farmhelper.fabric.util.BlockUtils;
 import com.jelly.farmhelper.fabric.util.Chat;
 import com.jelly.farmhelper.fabric.util.DesktopNotifier;
 import com.jelly.farmhelper.fabric.util.FailsafeUtils;
 import com.jelly.farmhelper.fabric.util.InventoryUtils;
+import com.jelly.farmhelper.fabric.util.KeyBindUtils;
 import com.jelly.farmhelper.fabric.util.PlotUtils;
 import com.jelly.farmhelper.fabric.util.PlayerUtils;
 import com.jelly.farmhelper.fabric.util.RenderUtils;
@@ -65,11 +67,14 @@ import net.minecraft.item.tooltip.TooltipType;
 import net.minecraft.screen.slot.Slot;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -121,6 +126,8 @@ public class FarmHelperFabricClient implements ClientModInitializer {
     private long worldJoinTick = -1L;
     private boolean postJoinAligned;
     private boolean wasNearRewarpPoint;
+    private RewarpPoint pendingRewarpPoint;
+    private long pendingRewarpReadyTick = -1L;
     private String lastServerAddress = "";
     private String lastServerName = "Last Server";
     private int reconnectAttempts;
@@ -258,6 +265,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             worldJoinTick = -1L;
             postJoinAligned = false;
             wasNearRewarpPoint = false;
+            clearPendingRewarp();
             reconnectCooldownUntilTick = tickCounter + 20L;
         });
         ClientPlayConnectionEvents.JOIN.register((handler, sender, c) -> {
@@ -265,6 +273,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             worldJoinTick = tickCounter;
             postJoinAligned = false;
             wasNearRewarpPoint = false;
+            clearPendingRewarp();
             reconnectAttempts = 0;
             reconnectCooldownUntilTick = -1L;
             MinecraftClient client = MinecraftClient.getInstance();
@@ -467,6 +476,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         copy.screenOpen = FEATURE_RUNTIME_STATE.screenOpen;
         copy.screenTitle = FEATURE_RUNTIME_STATE.screenTitle;
         copy.inventoryFillPercent = FEATURE_RUNTIME_STATE.inventoryFillPercent;
+        copy.visitorOffer = FEATURE_RUNTIME_STATE.visitorOffer.copy();
         copy.millisSinceWorldTimePacket = FEATURE_RUNTIME_STATE.millisSinceWorldTimePacket;
         copy.estimatedServerTps = FEATURE_RUNTIME_STATE.estimatedServerTps;
         copy.networkLagging = FEATURE_RUNTIME_STATE.networkLagging;
@@ -478,6 +488,13 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         copy.guiInfestedPlot = FEATURE_RUNTIME_STATE.guiInfestedPlot;
         copy.guiInfestedPests = FEATURE_RUNTIME_STATE.guiInfestedPests;
         copy.pestsInTablist = FEATURE_RUNTIME_STATE.pestsInTablist;
+        copy.allowFlying = FEATURE_RUNTIME_STATE.allowFlying;
+        copy.flying = FEATURE_RUNTIME_STATE.flying;
+        copy.onGround = FEATURE_RUNTIME_STATE.onGround;
+        copy.aboveHeadClear = FEATURE_RUNTIME_STATE.aboveHeadClear;
+        copy.canFlyHigher = FEATURE_RUNTIME_STATE.canFlyHigher;
+        copy.playerSuffocating = FEATURE_RUNTIME_STATE.playerSuffocating;
+        copy.automationBusy = FEATURE_RUNTIME_STATE.automationBusy;
         copy.jacobContestActive = FEATURE_RUNTIME_STATE.jacobContestActive;
         copy.godPotionActive = FEATURE_RUNTIME_STATE.godPotionActive;
         copy.cookieBuffActive = FEATURE_RUNTIME_STATE.cookieBuffActive;
@@ -818,11 +835,36 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             RUNTIME_SNAPSHOT.screenOpen = false;
             RUNTIME_SNAPSHOT.screenTitle = "";
             RUNTIME_SNAPSHOT.inventoryFillPercent = 0;
+            RUNTIME_SNAPSHOT.visitorOffer.clear();
             RUNTIME_SNAPSHOT.selectedSlotChanges = 0;
             RUNTIME_SNAPSHOT.nearCobweb = false;
             RUNTIME_SNAPSHOT.nearDirt = false;
             RUNTIME_SNAPSHOT.nearBedrock = false;
+            RUNTIME_SNAPSHOT.bedrockCount = 0;
+            RUNTIME_SNAPSHOT.dirtOnLeft = false;
+            RUNTIME_SNAPSHOT.dirtOnRight = false;
+            RUNTIME_SNAPSHOT.bedrockOnLeft = false;
+            RUNTIME_SNAPSHOT.bedrockOnRight = false;
             RUNTIME_SNAPSHOT.hasBadEffects = false;
+            RUNTIME_SNAPSHOT.poisonActive = false;
+            RUNTIME_SNAPSHOT.witherActive = false;
+            RUNTIME_SNAPSHOT.blindnessActive = false;
+            RUNTIME_SNAPSHOT.nauseaActive = false;
+            RUNTIME_SNAPSHOT.darknessActive = false;
+            RUNTIME_SNAPSHOT.miningFatigueActive = false;
+            RUNTIME_SNAPSHOT.hungerActive = false;
+            RUNTIME_SNAPSHOT.slownessActive = false;
+            RUNTIME_SNAPSHOT.weaknessActive = false;
+            RUNTIME_SNAPSHOT.burning = false;
+            RUNTIME_SNAPSHOT.jumpBoostActive = false;
+            RUNTIME_SNAPSHOT.allowFlying = false;
+            RUNTIME_SNAPSHOT.flying = false;
+            RUNTIME_SNAPSHOT.onGround = false;
+            RUNTIME_SNAPSHOT.aboveHeadClear = false;
+            RUNTIME_SNAPSHOT.canFlyHigher = false;
+            RUNTIME_SNAPSHOT.playerSuffocating = false;
+            RUNTIME_SNAPSHOT.automationBusy = false;
+            RUNTIME_SNAPSHOT.movementRecordingPlaying = false;
             RUNTIME_SNAPSHOT.nearSpawnPoint = false;
             RUNTIME_SNAPSHOT.nearRewarpPoint = false;
             RUNTIME_SNAPSHOT.location = "";
@@ -877,6 +919,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         RUNTIME_SNAPSHOT.screenTitle = client.currentScreen == null
                 ? ""
                 : client.currentScreen.getTitle().getString();
+        populateVisitorOfferSnapshot(client, player);
         GuiInfestedPlot guiInfestedPlot = findInfestedPlotInOpenGui(client);
         RUNTIME_SNAPSHOT.guiInfestedPlot = guiInfestedPlot == null ? -1 : guiInfestedPlot.plot();
         RUNTIME_SNAPSHOT.guiInfestedPests = guiInfestedPlot == null ? 0 : guiInfestedPlot.pests();
@@ -898,9 +941,40 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         RUNTIME_SNAPSHOT.nearCobweb = hasNearbyBlock(client, player.getBlockPos(), Blocks.COBWEB);
         RUNTIME_SNAPSHOT.nearDirt = hasNearbyBlock(client, player.getBlockPos(), Blocks.DIRT);
         RUNTIME_SNAPSHOT.nearBedrock = hasNearbyBlock(client, player.getBlockPos(), Blocks.BEDROCK);
-        RUNTIME_SNAPSHOT.hasBadEffects = player.hasStatusEffect(StatusEffects.BLINDNESS)
-                || player.hasStatusEffect(StatusEffects.NAUSEA)
-                || player.hasStatusEffect(StatusEffects.DARKNESS);
+        RUNTIME_SNAPSHOT.bedrockCount = countBedrockArea(client, player);
+        RUNTIME_SNAPSHOT.dirtOnLeft = hasRelativeBlock(client, player, -1, 1, 0, Blocks.DIRT);
+        RUNTIME_SNAPSHOT.dirtOnRight = hasRelativeBlock(client, player, 1, 1, 0, Blocks.DIRT);
+        RUNTIME_SNAPSHOT.bedrockOnLeft = hasRelativeBlock(client, player, -1, 1, 0, Blocks.BEDROCK);
+        RUNTIME_SNAPSHOT.bedrockOnRight = hasRelativeBlock(client, player, 1, 1, 0, Blocks.BEDROCK);
+        RUNTIME_SNAPSHOT.poisonActive = player.hasStatusEffect(StatusEffects.POISON);
+        RUNTIME_SNAPSHOT.witherActive = player.hasStatusEffect(StatusEffects.WITHER);
+        RUNTIME_SNAPSHOT.blindnessActive = player.hasStatusEffect(StatusEffects.BLINDNESS);
+        RUNTIME_SNAPSHOT.nauseaActive = player.hasStatusEffect(StatusEffects.NAUSEA);
+        RUNTIME_SNAPSHOT.darknessActive = player.hasStatusEffect(StatusEffects.DARKNESS);
+        RUNTIME_SNAPSHOT.miningFatigueActive = player.hasStatusEffect(StatusEffects.MINING_FATIGUE);
+        RUNTIME_SNAPSHOT.hungerActive = player.hasStatusEffect(StatusEffects.HUNGER);
+        RUNTIME_SNAPSHOT.slownessActive = player.hasStatusEffect(StatusEffects.SLOWNESS);
+        RUNTIME_SNAPSHOT.weaknessActive = player.hasStatusEffect(StatusEffects.WEAKNESS);
+        RUNTIME_SNAPSHOT.burning = player.isOnFire();
+        RUNTIME_SNAPSHOT.jumpBoostActive = player.hasStatusEffect(StatusEffects.JUMP_BOOST);
+        RUNTIME_SNAPSHOT.allowFlying = player.getAbilities().allowFlying;
+        RUNTIME_SNAPSHOT.flying = player.getAbilities().flying;
+        RUNTIME_SNAPSHOT.onGround = player.isOnGround();
+        RUNTIME_SNAPSHOT.aboveHeadClear = isAboveHeadClear(client, player);
+        RUNTIME_SNAPSHOT.canFlyHigher = BlockUtils.isAboveHeadClear(client, player, 5);
+        RUNTIME_SNAPSHOT.playerSuffocating = PlayerUtils.isPlayerSuffocating(client);
+        RUNTIME_SNAPSHOT.automationBusy = automationExecutor.isBusy();
+        RUNTIME_SNAPSHOT.hasBadEffects = RUNTIME_SNAPSHOT.poisonActive
+                || RUNTIME_SNAPSHOT.witherActive
+                || RUNTIME_SNAPSHOT.blindnessActive
+                || RUNTIME_SNAPSHOT.nauseaActive
+                || RUNTIME_SNAPSHOT.darknessActive
+                || RUNTIME_SNAPSHOT.miningFatigueActive
+                || RUNTIME_SNAPSHOT.hungerActive
+                || RUNTIME_SNAPSHOT.slownessActive
+                || RUNTIME_SNAPSHOT.weaknessActive
+                || RUNTIME_SNAPSHOT.burning;
+        RUNTIME_SNAPSHOT.movementRecordingPlaying = automationExecutor.isMovementRecordingPlaying();
         RUNTIME_SNAPSHOT.nearSpawnPoint = isNearConfiguredSpawn(client, FarmHelperFabric.getConfigManager().getConfig());
         RUNTIME_SNAPSHOT.nearRewarpPoint = isNearAnyRewarpPoint(client, FarmHelperFabric.getConfigManager().getConfig());
         RUNTIME_SNAPSHOT.location = GAME_STATE_HANDLER.getLocation().name();
@@ -946,6 +1020,7 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         FEATURE_RUNTIME_STATE.screenOpen = RUNTIME_SNAPSHOT.screenOpen;
         FEATURE_RUNTIME_STATE.screenTitle = RUNTIME_SNAPSHOT.screenTitle;
         FEATURE_RUNTIME_STATE.inventoryFillPercent = RUNTIME_SNAPSHOT.inventoryFillPercent;
+        FEATURE_RUNTIME_STATE.visitorOffer = RUNTIME_SNAPSHOT.visitorOffer.copy();
         FEATURE_RUNTIME_STATE.millisSinceWorldTimePacket = RUNTIME_SNAPSHOT.millisSinceWorldTimePacket;
         FEATURE_RUNTIME_STATE.estimatedServerTps = RUNTIME_SNAPSHOT.estimatedServerTps;
         FEATURE_RUNTIME_STATE.networkLagging = RUNTIME_SNAPSHOT.networkLagging;
@@ -957,6 +1032,13 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         FEATURE_RUNTIME_STATE.guiInfestedPlot = RUNTIME_SNAPSHOT.guiInfestedPlot;
         FEATURE_RUNTIME_STATE.guiInfestedPests = RUNTIME_SNAPSHOT.guiInfestedPests;
         FEATURE_RUNTIME_STATE.pestsInTablist = RUNTIME_SNAPSHOT.pestsInTablist;
+        FEATURE_RUNTIME_STATE.allowFlying = RUNTIME_SNAPSHOT.allowFlying;
+        FEATURE_RUNTIME_STATE.flying = RUNTIME_SNAPSHOT.flying;
+        FEATURE_RUNTIME_STATE.onGround = RUNTIME_SNAPSHOT.onGround;
+        FEATURE_RUNTIME_STATE.aboveHeadClear = RUNTIME_SNAPSHOT.aboveHeadClear;
+        FEATURE_RUNTIME_STATE.canFlyHigher = RUNTIME_SNAPSHOT.canFlyHigher;
+        FEATURE_RUNTIME_STATE.playerSuffocating = RUNTIME_SNAPSHOT.playerSuffocating;
+        FEATURE_RUNTIME_STATE.automationBusy = RUNTIME_SNAPSHOT.automationBusy;
         FEATURE_RUNTIME_STATE.jacobContestActive = RUNTIME_SNAPSHOT.jacobContestActive;
         FEATURE_RUNTIME_STATE.godPotionActive = RUNTIME_SNAPSHOT.godPotionActive;
         FEATURE_RUNTIME_STATE.cookieBuffActive = RUNTIME_SNAPSHOT.cookieBuffActive;
@@ -983,6 +1065,85 @@ public class FarmHelperFabricClient implements ClientModInitializer {
             return 0;
         }
         return (int) ((used * 100.0) / total);
+    }
+
+    private void populateVisitorOfferSnapshot(MinecraftClient client, ClientPlayerEntity player) {
+        VisitorOfferSnapshot snapshot = RUNTIME_SNAPSHOT.visitorOffer;
+        snapshot.clear();
+        if (player == null) {
+            return;
+        }
+
+        for (ItemStack stack : player.getInventory().getMainStacks()) {
+            if (stack == null || stack.isEmpty()) {
+                snapshot.emptyInventorySlots++;
+                continue;
+            }
+            String itemName = cleanFormatting(stack.getName().getString());
+            if (itemName.isBlank()) {
+                continue;
+            }
+            snapshot.inventoryCounts.merge(itemName, stack.getCount(), Integer::sum);
+        }
+        for (int slotIndex = 0; slotIndex < 9; slotIndex++) {
+            ItemStack hotbarStack = player.getInventory().getStack(slotIndex);
+            if (hotbarStack == null || hotbarStack.isEmpty()) {
+                continue;
+            }
+            String itemName = cleanFormatting(hotbarStack.getName().getString()).toLowerCase(Locale.ROOT);
+            if (itemName.contains("compactor")) {
+                snapshot.hotbarCompactorSlots.add(slotIndex);
+            }
+        }
+
+        if (client == null || client.currentScreen == null || player.currentScreenHandler == null) {
+            return;
+        }
+
+        String title = cleanFormatting(client.currentScreen.getTitle() == null
+                ? ""
+                : client.currentScreen.getTitle().getString());
+        if (!title.toLowerCase(Locale.ROOT).contains("visitor")) {
+            return;
+        }
+
+        snapshot.visitorScreenOpen = true;
+        snapshot.inventoryLoaded = InventoryUtils.isInventoryLoaded(client);
+        snapshot.inventoryName = title;
+        for (Slot slot : player.currentScreenHandler.slots) {
+            if (slot == null || !slot.hasStack() || slot.inventory == player.getInventory()) {
+                continue;
+            }
+            ItemStack stack = slot.getStack();
+            if (stack == null || stack.isEmpty()) {
+                continue;
+            }
+
+            String displayName = cleanFormatting(stack.getName().getString());
+            List<String> lore = new ArrayList<>();
+            for (String loreLine : InventoryUtils.getItemLore(stack)) {
+                lore.add(cleanFormatting(loreLine));
+            }
+
+            if (slot.id == 13) {
+                snapshot.npcSlot = slot.id;
+                snapshot.npcName = displayName;
+                if (stack.getName() != null
+                        && stack.getName().getStyle() != null
+                        && stack.getName().getStyle().getColor() != null) {
+                    snapshot.npcColorRgb = stack.getName().getStyle().getColor().getRgb();
+                }
+                snapshot.npcLore.clear();
+                snapshot.npcLore.addAll(lore);
+            }
+
+            if (snapshot.acceptOfferSlot < 0 && displayName.toLowerCase(Locale.ROOT).contains("accept offer")) {
+                snapshot.acceptOfferSlot = slot.id;
+                snapshot.acceptOfferName = displayName;
+                snapshot.acceptOfferLore.clear();
+                snapshot.acceptOfferLore.addAll(lore);
+            }
+        }
     }
 
     private int trackSelectedSlotChanges(ClientPlayerEntity player) {
@@ -1012,6 +1173,45 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         return false;
     }
 
+    private boolean hasRelativeBlock(MinecraftClient client, ClientPlayerEntity player, int rightOffset, int yOffset, int forwardOffset, Block target) {
+        if (client == null || client.world == null || player == null || target == null) {
+            return false;
+        }
+        BlockPos pos = getRelativeBlockPos(player, rightOffset, yOffset, forwardOffset);
+        return client.world.getBlockState(pos).isOf(target);
+    }
+
+    private int countBedrockArea(MinecraftClient client, ClientPlayerEntity player) {
+        if (client == null || client.world == null || player == null) {
+            return 0;
+        }
+        int count = 0;
+        BlockPos base = player.getBlockPos();
+        for (int x = 0; x < 10; x++) {
+            for (int z = 0; z < 10; z++) {
+                if (client.world.getBlockState(base.add(x, 1, z)).isOf(Blocks.BEDROCK)) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private BlockPos getRelativeBlockPos(ClientPlayerEntity player, int rightOffset, int yOffset, int forwardOffset) {
+        Direction facing = Direction.fromHorizontalDegrees(player.getYaw());
+        Direction right = facing.rotateYClockwise();
+        int dx = right.getOffsetX() * rightOffset + facing.getOffsetX() * forwardOffset;
+        int dz = right.getOffsetZ() * rightOffset + facing.getOffsetZ() * forwardOffset;
+        return player.getBlockPos().add(dx, yOffset, dz);
+    }
+
+    private boolean isAboveHeadClear(MinecraftClient client, ClientPlayerEntity player) {
+        if (client == null || client.world == null || player == null) {
+            return false;
+        }
+        return client.world.isSpaceEmpty(player, player.getBoundingBox().offset(0.0, 1.0, 0.0));
+    }
+
     private void processClientActionQueue(MinecraftClient client) {
         if (client.player == null || client.getNetworkHandler() == null) {
             return;
@@ -1038,12 +1238,15 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         return switch (type) {
             case MOVE_TO_POS,
                     MOVE_TO_ENTITY,
+                    FLY_TO_POS,
+                    FLY_TO_PLOT_CENTER,
                     FLY_TO_ENTITY,
                     INTERACT_NEAREST_ENTITY,
                     ATTACK_NEAREST_ENTITY,
                     WAIT_FOR_SCREEN,
                     CLICK_SLOT_MATCHING,
-                    MINE_NEAREST_BLOCK -> true;
+                    MINE_NEAREST_BLOCK,
+                    ROTATE_TO -> true;
             default -> false;
         };
     }
@@ -1162,11 +1365,13 @@ public class FarmHelperFabricClient implements ClientModInitializer {
 
     private void tickMacroRecovery(MinecraftClient client) {
         if (client.player == null || client.world == null) {
+            clearPendingRewarp();
             return;
         }
         if (!FarmHelperFabric.getMacroController().isToggled()
                 || FarmHelperFabric.getMacroController().getState() != com.jelly.farmhelper.fabric.macro.MacroState.FARMING
                 || FarmHelperFabric.getFailsafeManager().hasActiveFailsafe()) {
+            clearPendingRewarp();
             return;
         }
 
@@ -1192,21 +1397,46 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         boolean enteredRewarpPoint = nearRewarpPoint && !wasNearRewarpPoint;
         wasNearRewarpPoint = nearRewarpPoint;
 
+        if (pendingRewarpPoint != null && !isSameRewarpPoint(pendingRewarpPoint, nearbyRewarpPoint)) {
+            FarmHelperFabric.getWebhookService().debugTrace("macro", "rewarp wait cancelled: player left pending rewarp area");
+            clearPendingRewarp();
+        }
+
         if (enteredRewarpPoint) {
             maybeTriggerAutoPestsAtRewarp(config);
+        }
+
+        if (pendingRewarpPoint != null) {
+            KeyBindUtils.stopMovement(client, false);
+            boolean stationaryEnough = GAME_STATE_TRACKER.getStationaryTicks() >= 8;
+            if (tickCounter >= pendingRewarpReadyTick && stationaryEnough) {
+                RewarpPoint triggerPoint = pendingRewarpPoint;
+                lastRewarpTriggerTick = tickCounter;
+                clearPendingRewarp();
+                FarmHelperFabric.getFailsafeManager().suppressPacketChecks(140L, 100L, 40L, "rewarp point warp");
+                FarmHelperFabric.getClientActionQueue().enqueueCommand("/warp garden", tickCounter);
+                FarmHelperFabric.getWebhookService().debugTrace(
+                        "macro",
+                        "rewarp triggered at "
+                                + triggerPoint.displayName(1)
+                                + " (" + triggerPoint.x + "," + triggerPoint.y + "," + triggerPoint.z + ")"
+                );
+            }
+            return;
         }
 
         if (nearRewarpPoint
                 && tickCounter - lastRewarpTriggerTick >= rewarpDelayTicks(config)
                 && (enteredRewarpPoint || GAME_STATE_TRACKER.getStationaryTicks() >= Math.max(14, config.stationaryFailsafeTicks / 2))) {
-            lastRewarpTriggerTick = tickCounter;
-            FarmHelperFabric.getFailsafeManager().suppressPacketChecks(140L, 100L, 40L, "rewarp point warp");
-            FarmHelperFabric.getClientActionQueue().enqueueCommand("/warp garden", tickCounter);
+            pendingRewarpPoint = nearbyRewarpPoint;
+            pendingRewarpReadyTick = tickCounter + rewarpCommandWaitTicks(config);
+            KeyBindUtils.stopMovement(client, false);
             FarmHelperFabric.getWebhookService().debugTrace(
                     "macro",
-                    "rewarp triggered at "
+                    "rewarp armed at "
                             + nearbyRewarpPoint.displayName(1)
                             + " (" + nearbyRewarpPoint.x + "," + nearbyRewarpPoint.y + "," + nearbyRewarpPoint.z + ")"
+                            + " waitTicks=" + Math.max(0L, pendingRewarpReadyTick - tickCounter)
             );
             return;
         }
@@ -1316,5 +1546,22 @@ public class FarmHelperFabricClient implements ClientModInitializer {
         int random = Math.max(0, config.rewarpDelayRandomnessMs);
         int value = base + (random == 0 ? 0 : (int) (Math.random() * random));
         return Math.max(20L, value / 50L);
+    }
+
+    private long rewarpCommandWaitTicks(FarmHelperConfig config) {
+        return Math.max(20L, rewarpDelayTicks(config));
+    }
+
+    private boolean isSameRewarpPoint(RewarpPoint a, RewarpPoint b) {
+        return a != null
+                && b != null
+                && a.x == b.x
+                && a.y == b.y
+                && a.z == b.z;
+    }
+
+    private void clearPendingRewarp() {
+        pendingRewarpPoint = null;
+        pendingRewarpReadyTick = -1L;
     }
 }

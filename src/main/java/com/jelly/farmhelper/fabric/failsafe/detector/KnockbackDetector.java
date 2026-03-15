@@ -21,6 +21,9 @@ public class KnockbackDetector implements FailsafeDetector {
         if (snapshot.macroRuntimeTicks < 40L) {
             return Optional.empty();
         }
+        if (snapshot.movementRecordingPlaying || state.packetTeleportSuppressed || snapshot.networkLagging) {
+            return Optional.empty();
+        }
         double threshold = Math.max(0.5, config.verticalKnockbackThreshold / 1000.0);
         if (config.enablePacketFailsafeChecks && state.packetVelocitySeen) {
             if (Math.abs(state.packetVelocityY) > threshold || state.packetVelocityMagnitude > threshold * 1.6) {

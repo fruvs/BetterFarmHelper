@@ -65,10 +65,10 @@ final class VerticalLaneMacroController implements LegacyMovementController {
                 if (executor.legacyDetectLagBack(client)) {
                     return;
                 }
-                if (walkability.left()) {
-                    executor.setRouteState(MovementMacroExecutor.LegacyRouteState.LEFT);
-                } else if (walkability.right()) {
-                    executor.setRouteState(MovementMacroExecutor.LegacyRouteState.RIGHT);
+                MovementMacroExecutor.LegacyRouteState resolved = executor.resolveRouteAfterLaneSwitch(client, walkability, false);
+                if (resolved == MovementMacroExecutor.LegacyRouteState.LEFT
+                        || resolved == MovementMacroExecutor.LegacyRouteState.RIGHT) {
+                    executor.setRouteState(resolved);
                 } else {
                     executor.setRouteState(MovementMacroExecutor.LegacyRouteState.NONE);
                 }

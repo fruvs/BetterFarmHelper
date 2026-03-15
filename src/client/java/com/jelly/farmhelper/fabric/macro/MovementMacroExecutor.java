@@ -2156,7 +2156,7 @@ public class MovementMacroExecutor {
         };
     }
 
-    private LegacyRouteState resolveRouteAfterLaneSwitch(MinecraftClient client, Walkability walkability, boolean melonPriority) {
+    LegacyRouteState resolveRouteAfterLaneSwitch(MinecraftClient client, Walkability walkability, boolean melonPriority) {
         LegacyRouteState preferred = oppositeSide(previousRouteState);
         if (preferred == LegacyRouteState.RIGHT && walkability.right) {
             return LegacyRouteState.RIGHT;
@@ -2774,7 +2774,9 @@ public class MovementMacroExecutor {
         }
 
         sampleRotationSmoothing(config);
-        boolean disableSimulationOffsets = activeType == LegacyMacroType.S_PUMPKIN_MELON_DEFAULT_PLOT;
+        // Legacy Forge macros held a fixed target view after startup unless a controller explicitly changed it.
+        // Do not layer player-simulation jitter on top of those profiles.
+        boolean disableSimulationOffsets = config.useLegacyProfileDefaults;
         float simulationYawOffset = disableSimulationOffsets ? 0f : playerSimulation.getYawOffset(config, runtimeTicks);
         float simulationPitchOffset = disableSimulationOffsets ? 0f : playerSimulation.getPitchOffset(config, runtimeTicks);
         float yawStep = sampledYawStep;
@@ -2801,7 +2803,7 @@ public class MovementMacroExecutor {
             return;
         }
         sampleRotationSmoothing(config);
-        boolean disableSimulationOffsets = activeType == LegacyMacroType.S_PUMPKIN_MELON_DEFAULT_PLOT;
+        boolean disableSimulationOffsets = config.useLegacyProfileDefaults;
         float simulationYawOffset = disableSimulationOffsets ? 0f : playerSimulation.getYawOffset(config, runtimeTicks);
         float simulationPitchOffset = disableSimulationOffsets ? 0f : playerSimulation.getPitchOffset(config, runtimeTicks);
         float yawStep = startupAlignmentPending ? Math.min(sampledYawStep, 4.0f) : sampledYawStep;
@@ -3030,22 +3032,6 @@ public class MovementMacroExecutor {
         boolean requestedLeft = left;
         boolean requestedRight = right;
 
-        if (config.useLegacyProfileDefaults
-                && shouldApplyLegacyWallHugAssist()
-                && (left ^ right)
-                && !forward
-                && !back
-                && client != null
-                && client.player != null
-                && client.world != null) {
-            Walkability walkability = computeWalkability(client, getLaneRoutingYaw());
-            if (!walkability.back() && walkability.front()) {
-                forward = true;
-            } else if (!walkability.front() && walkability.back()) {
-                back = true;
-            }
-        }
-
         if (!config.useLegacyProfileDefaults
                 && config.alwaysHoldW
                 && !back
@@ -3105,18 +3091,6 @@ public class MovementMacroExecutor {
         setPressed(client.options.attackKey, decision.attack());
         lastMovementDecision = decision;
         lastMovementDecisionTick = runtimeTicks;
-    }
-
-    private boolean shouldApplyLegacyWallHugAssist() {
-        return switch (activeType) {
-            case S_V_NORMAL_TYPE,
-                    S_PUMPKIN_MELON,
-                    S_PUMPKIN_MELON_MELONGKINGDE,
-                    S_CACTUS,
-                    S_CACTUS_SUNTZU,
-                    S_PUMPKIN_MELON_DEFAULT_PLOT -> true;
-            default -> false;
-        };
     }
 
     void stopAllMovement(MinecraftClient client) {

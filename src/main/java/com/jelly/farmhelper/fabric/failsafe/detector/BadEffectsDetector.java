@@ -18,8 +18,16 @@ public class BadEffectsDetector implements FailsafeDetector {
         if (snapshot.macroState != MacroState.FARMING) {
             return Optional.empty();
         }
-        if (snapshot.hasBadEffects) {
-            return Optional.of("Suspicious potion effect detected while macroing");
+        if (snapshot.poisonActive
+                || snapshot.witherActive
+                || snapshot.blindnessActive
+                || snapshot.nauseaActive
+                || snapshot.miningFatigueActive
+                || snapshot.hungerActive
+                || snapshot.slownessActive
+                || snapshot.weaknessActive
+                || snapshot.burning) {
+            return Optional.of("Negative status effect detected while macroing");
         }
         return Optional.empty();
     }

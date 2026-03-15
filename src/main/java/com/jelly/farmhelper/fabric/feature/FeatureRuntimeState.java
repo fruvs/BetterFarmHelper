@@ -22,6 +22,7 @@ public class FeatureRuntimeState {
     public boolean screenOpen;
     public String screenTitle = "";
     public int inventoryFillPercent;
+    public VisitorOfferSnapshot visitorOffer = new VisitorOfferSnapshot();
     public long millisSinceWorldTimePacket;
     public float estimatedServerTps;
     public boolean networkLagging;
@@ -33,6 +34,13 @@ public class FeatureRuntimeState {
     public int guiInfestedPlot = -1;
     public int guiInfestedPests;
     public int pestsInTablist;
+    public boolean allowFlying;
+    public boolean flying;
+    public boolean onGround;
+    public boolean aboveHeadClear;
+    public boolean canFlyHigher;
+    public boolean playerSuffocating;
+    public boolean automationBusy;
     public boolean jacobContestActive;
     public boolean godPotionActive;
     public boolean cookieBuffActive;

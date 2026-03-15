@@ -4,6 +4,7 @@ import com.jelly.farmhelper.fabric.FarmHelperFabric;
 import com.jelly.farmhelper.fabric.config.FarmHelperConfig;
 import com.jelly.farmhelper.fabric.config.struct.RewarpPoint;
 import com.jelly.farmhelper.fabric.util.Chat;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -159,30 +160,11 @@ public class RewarpPointsScreen extends Screen {
     }
 
     private void addCurrentPosition() {
-        if (client == null || client.player == null) {
-            Chat.info("Join a world before adding a rewarp point");
+        int previousCount = config.rewarpPoints.size();
+        if (!addCurrentPlayerPosition()) {
             return;
         }
-        RewarpPoint newPoint = new RewarpPoint(
-                null,
-                client.player.getBlockX(),
-                client.player.getBlockY(),
-                client.player.getBlockZ(),
-                client.player.getYaw(),
-                client.player.getPitch()
-        );
-        for (int i = 0; i < config.rewarpPoints.size(); i++) {
-            RewarpPoint existing = config.rewarpPoints.get(i);
-            if (existing.x == newPoint.x && existing.y == newPoint.y && existing.z == newPoint.z) {
-                Chat.info("Rewarp already exists: " + existing.displayName(i + 1));
-                return;
-            }
-        }
-        newPoint.normalizeInPlace(config.rewarpPoints.size() + 1);
-        config.rewarpPoints.add(newPoint);
-        FarmHelperFabric.getConfigManager().save();
-        Chat.info("Added rewarp point: " + newPoint.displayName(config.rewarpPoints.size()));
-        int targetPage = Math.max(0, (config.rewarpPoints.size() - 1) / Math.max(1, rowsPerPage));
+        int targetPage = Math.max(0, (Math.max(previousCount, config.rewarpPoints.size()) - 1) / Math.max(1, rowsPerPage));
         reopen(targetPage);
     }
 
@@ -227,6 +209,37 @@ public class RewarpPointsScreen extends Screen {
         if (nextButton != null) {
             nextButton.active = currentPage < maxPage();
         }
+    }
+
+    public static boolean addCurrentPlayerPosition() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        FarmHelperConfig config = FarmHelperFabric.getConfigManager().getConfig();
+        if (client == null || client.player == null) {
+            Chat.info("Join a world before adding a rewarp point");
+            return false;
+        }
+
+        RewarpPoint newPoint = new RewarpPoint(
+                null,
+                client.player.getBlockX(),
+                client.player.getBlockY(),
+                client.player.getBlockZ(),
+                client.player.getYaw(),
+                client.player.getPitch()
+        );
+        for (int i = 0; i < config.rewarpPoints.size(); i++) {
+            RewarpPoint existing = config.rewarpPoints.get(i);
+            if (existing.x == newPoint.x && existing.y == newPoint.y && existing.z == newPoint.z) {
+                Chat.info("Rewarp already exists: " + existing.displayName(i + 1));
+                return false;
+            }
+        }
+
+        newPoint.normalizeInPlace(config.rewarpPoints.size() + 1);
+        config.rewarpPoints.add(newPoint);
+        FarmHelperFabric.getConfigManager().save();
+        Chat.info("Added rewarp point: " + newPoint.displayName(config.rewarpPoints.size()));
+        return true;
     }
 
     private static final class RowData {

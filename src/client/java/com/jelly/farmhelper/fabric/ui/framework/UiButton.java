@@ -40,11 +40,12 @@ public class UiButton extends UiComponent {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client != null && client.textRenderer != null) {
             Text label = labelSupplier == null ? Text.empty() : labelSupplier.get();
-            int tw = client.textRenderer.getWidth(label);
+            String labelText = client.textRenderer.trimToWidth(label.getString(), Math.max(12, width - 10));
+            int tw = client.textRenderer.getWidth(labelText);
             int tx = x + (width - tw) / 2;
             int ty = y + (height - 8) / 2;
             int color = enabled ? theme.textPrimary : theme.textSecondary;
-            context.drawText(client.textRenderer, label, tx, ty, color, true);
+            context.drawText(client.textRenderer, labelText, tx, ty, color, true);
         }
     }
 

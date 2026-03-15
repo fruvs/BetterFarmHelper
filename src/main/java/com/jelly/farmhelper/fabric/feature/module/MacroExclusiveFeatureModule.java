@@ -81,6 +81,14 @@ public abstract class MacroExclusiveFeatureModule extends AbstractFeatureModule 
         FarmHelperFabric.getClientActionQueue().enqueueMoveToEntity(namesCsv, radius, timeoutTicks, tick);
     }
 
+    protected void queueFlyToPos(double x, double y, double z, double tolerance, long timeoutTicks, long tick) {
+        FarmHelperFabric.getClientActionQueue().enqueueFlyToPos(x, y, z, tolerance, timeoutTicks, tick);
+    }
+
+    protected void queueFlyToPlotCenter(int plotNumber, double tolerance, long timeoutTicks, long tick) {
+        FarmHelperFabric.getClientActionQueue().enqueueFlyToPlotCenter(plotNumber, tolerance, timeoutTicks, tick);
+    }
+
     protected void queueFlyToEntity(String namesCsv, double radius, long timeoutTicks, long tick) {
         FarmHelperFabric.getClientActionQueue().enqueueFlyToEntity(namesCsv, radius, timeoutTicks, tick);
     }
@@ -119,6 +127,14 @@ public abstract class MacroExclusiveFeatureModule extends AbstractFeatureModule 
 
     protected void queueSelectHotbarItem(String itemNameQuery, long tick) {
         FarmHelperFabric.getClientActionQueue().enqueueSelectHotbarItem(itemNameQuery, tick);
+    }
+
+    protected void queueSelectHotbarSlot(int slot, long tick) {
+        FarmHelperFabric.getClientActionQueue().enqueueSelectHotbarItem("slot:" + Math.max(0, slot), tick);
+    }
+
+    protected void queueRotateTo(float yaw, float pitch, long durationTicks, long tick) {
+        FarmHelperFabric.getClientActionQueue().enqueueRotateTo(yaw, pitch, durationTicks, tick);
     }
 
     protected void queueMineNearestBlock(String blockHintsCsv, double radius, long timeoutTicks, long tick) {

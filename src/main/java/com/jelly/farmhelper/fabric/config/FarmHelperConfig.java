@@ -141,6 +141,17 @@ public class FarmHelperConfig {
     public int visitorsMacroRetryLimit = 3;
     public String visitorsMacroBlacklistCsv = "";
     public String visitorsMacroWhitelistCsv = "";
+    public boolean filterVisitorsByName = false;
+    public boolean nameFilteringType = false;
+    public boolean nameActionType = true;
+    public String nameFilter = "Librarian|Maeve|Spaceman";
+    public boolean filterVisitorsByRarity = true;
+    public int visitorsActionUncommon = 0;
+    public int visitorsActionRare = 0;
+    public int visitorsActionLegendary = 0;
+    public int visitorsActionMythic = 0;
+    public int visitorsActionSpecial = 3;
+    public boolean fullInventoryAction = true;
 
     public boolean autoCookie = false;
     public int autoCookieCheckMinutes = 30;
@@ -167,6 +178,8 @@ public class FarmHelperConfig {
     public boolean pestsDestroyerAfkInfiniteMode = false;
     public int pestsDestroyerMaxPasses = 3;
     public int pestsDestroyerRetryLimit = 3;
+    public boolean pestsDestroyerDontTeleportToPlots = false;
+    public int pestsDestroyerCantReachTicks = 100;
     public boolean pestsDestroyerDisableDuringJacobsContest = true;
     public boolean pestsDestroyerStartOnlyOnRewarpOrSpawn = false;
     public boolean pestsDestroyerOnTheTrack = false;

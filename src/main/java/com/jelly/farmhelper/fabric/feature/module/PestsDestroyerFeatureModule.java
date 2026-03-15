@@ -19,9 +19,16 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         OPEN_PLOTS,
         TELEPORT_TO_PLOT,
         WAIT_FOR_TELEPORT,
+        CHECK_REACHABILITY,
+        ESCAPE_TO_BARN,
+        FLY_TO_PLOT,
         TRACK_CLUSTER,
         MOVE_TO_PEST_ZONE,
         HUNT_PESTS,
+        ESCAPE_TO_HUB,
+        ESCAPE_WAIT_FOR_HUB,
+        ESCAPE_TO_GARDEN,
+        ESCAPE_WAIT_FOR_GARDEN,
         VERIFY_REMAINING,
         FINISH
     }
@@ -38,6 +45,10 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
     private static final long QUEUE_DRAIN_TIMEOUT_TICKS = 60L;
     /** Max ticks to wait for teleport to complete. */
     private static final long TELEPORT_WAIT_TICKS = 50L;
+    private static final long BARN_ESCAPE_WAIT_TICKS = 45L;
+    private static final long PLOT_REACHABILITY_GRACE_TICKS = 40L;
+    private static final long FLY_TO_PLOT_TIMEOUT_TICKS = 320L;
+    private static final int MAX_ESCAPE_ATTEMPTS = 3;
 
     private State state = State.IDLE;
     private long stateSinceTick = 0L;
@@ -51,12 +62,18 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
     private int plotResolveRetries;
     private int teleportRetries;
     private int cycleFailures;
+    private int cantReachTicks;
+    private int escapeAttempts;
     private int targetPlot;
     private int lastKnownInfestedPlot = -1;
     private boolean seenKillSignalThisPass;
     private boolean manualTriggerRequested;
     private double activeVacuumRange = 5.0;
     private boolean vacuumUseHeld;
+    /** Player position captured right before sending /plottp, used to detect successful teleport via position change. */
+    private double preTeleportX;
+    private double preTeleportY;
+    private double preTeleportZ;
 
     public PestsDestroyerFeatureModule(boolean enabled) {
         super("pests_destroyer", "Pests Destroyer", enabled);
@@ -193,6 +210,8 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         plotResolveRetries = 0;
         teleportRetries = 0;
         cycleFailures = 0;
+        cantReachTicks = 0;
+        escapeAttempts = 0;
         targetPlot = -1;
         seenKillSignalThisPass = false;
         manualTriggerRequested = false;
@@ -342,15 +361,24 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                         stateRetries = 0;
                         plotResolveRetries = 0;
                         teleportRetries = 0;
+                        cantReachTicks = 0;
                         if (runtime.currentPlot == targetPlot) {
-                            setState(State.TRACK_CLUSTER, runtime.tickCount, true);
+                            setState(State.CHECK_REACHABILITY, runtime.tickCount, true);
                             return;
                         }
+                        if (config.pestsDestroyerDontTeleportToPlots) {
+                            setState(State.FLY_TO_PLOT, runtime.tickCount, true);
+                            return;
+                        }
+                        preTeleportX = runtime.posX;
+                        preTeleportY = runtime.posY;
+                        preTeleportZ = runtime.posZ;
+                        FarmHelperFabric.getClientActionQueue().clear();
                         queueCommand("/plottp " + targetPlot, runtime.tickCount);
                         setState(State.WAIT_FOR_TELEPORT, runtime.tickCount, true);
                     } else if (runtime.currentPlot > 0) {
                         // Desk interaction may have teleported us even if tablist parsing lags behind.
-                        setState(State.TRACK_CLUSTER, runtime.tickCount, true);
+                        setState(State.CHECK_REACHABILITY, runtime.tickCount, true);
                     } else {
                         int retryLimit = Math.max(1, config.pestsDestroyerRetryLimit);
                         if (plotResolveRetries < retryLimit) {
@@ -374,17 +402,35 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                 }
             }
             case WAIT_FOR_TELEPORT -> {
+                // Check 1: Plot detection confirms we're on the target plot.
                 if (ticksInState(runtime.tickCount) >= 10L && targetPlot > 0 && runtime.currentPlot == targetPlot) {
-                    setState(State.TRACK_CLUSTER, runtime.tickCount, true);
+                    setState(State.CHECK_REACHABILITY, runtime.tickCount, true);
+                    return;
+                }
+
+                // Check 2: Player position changed significantly — teleport likely worked even if
+                // currentPlot detection fails (e.g. empty plot with no ground to stand on).
+                if (ticksInState(runtime.tickCount) >= 10L && hasTeleportedByPosition(runtime)) {
+                    FarmHelperFabric.getWebhookService().debugTrace(
+                            "feature",
+                            "pests_destroyer teleport detected by position change"
+                                    + " targetPlot=" + targetPlot
+                                    + " currentPlot=" + runtime.currentPlot
+                                    + " pos=(" + String.format(java.util.Locale.US, "%.1f,%.1f,%.1f", runtime.posX, runtime.posY, runtime.posZ) + ")"
+                    );
+                    setState(State.CHECK_REACHABILITY, runtime.tickCount, true);
                     return;
                 }
 
                 // If teleport did not complete in time, retry limited times before aborting the cycle.
                 if (ticksInState(runtime.tickCount) >= TELEPORT_WAIT_TICKS) {
-                    if (targetPlot > 0 && runtime.currentPlot != targetPlot) {
+                    if (targetPlot > 0 && runtime.currentPlot != targetPlot && !hasTeleportedByPosition(runtime)) {
                         int retryLimit = Math.max(1, config.pestsDestroyerRetryLimit);
                         if (teleportRetries < retryLimit) {
                             teleportRetries++;
+                            preTeleportX = runtime.posX;
+                            preTeleportY = runtime.posY;
+                            preTeleportZ = runtime.posZ;
                             queueCommand("/plottp " + targetPlot, runtime.tickCount);
                             FarmHelperFabric.getWebhookService().debugTrace(
                                     "feature",
@@ -393,15 +439,108 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                             );
                             setState(State.WAIT_FOR_TELEPORT, runtime.tickCount, false);
                         } else {
-                            FarmHelperFabric.getWebhookService().sendFeatureLog(
+                            triggerBarnEscape(
+                                    runtime,
                                     "Pests Destroyer: failed to teleport to plot " + targetPlot
-                                            + " after " + retryLimit + " retries"
+                                            + " after " + retryLimit + " retries, switching to barn recovery"
                             );
-                            setState(State.FINISH, runtime.tickCount, true);
                         }
                         return;
                     }
+                    setState(State.CHECK_REACHABILITY, runtime.tickCount, true);
+                }
+            }
+            case CHECK_REACHABILITY -> {
+                // If the player is falling through an empty plot (not flying, not on ground),
+                // escape to barn and fly from there instead.
+                boolean falling = !runtime.flying && !runtime.onGround && runtime.allowFlying;
+                if (falling && ticksInState(runtime.tickCount) >= 6L) {
+                    triggerBarnEscape(
+                            runtime,
+                            "Pests Destroyer: falling on empty plot " + targetPlot + ", will fly from barn"
+                    );
+                    return;
+                }
+
+                boolean obstructed = runtime.playerSuffocating || !runtime.canFlyHigher;
+                if (obstructed) {
+                    if (ticksInState(runtime.tickCount) >= PLOT_REACHABILITY_GRACE_TICKS) {
+                        triggerBarnEscape(
+                                runtime,
+                                "Pests Destroyer: arrived obstructed on plot " + targetPlot + ", escaping to barn"
+                        );
+                    }
+                    return;
+                }
+                if (ticksInState(runtime.tickCount) >= 12L) {
                     setState(State.TRACK_CLUSTER, runtime.tickCount, true);
+                }
+            }
+            case ESCAPE_TO_BARN -> {
+                if (isEntryTick(runtime.tickCount)) {
+                    if (targetPlot <= 0) {
+                        setState(State.FINISH, runtime.tickCount, true);
+                        return;
+                    }
+                    FarmHelperFabric.getClientActionQueue().clear();
+                    queueCommand("/tptoplot barn", runtime.tickCount);
+                }
+                if (runtime.currentPlot == 0 || isLocation(runtime, "BARN") || ticksInState(runtime.tickCount) >= BARN_ESCAPE_WAIT_TICKS) {
+                    setState(State.FLY_TO_PLOT, runtime.tickCount, true);
+                }
+            }
+            case FLY_TO_PLOT -> {
+                if (isEntryTick(runtime.tickCount)) {
+                    if (targetPlot <= 0) {
+                        setState(State.FINISH, runtime.tickCount, true);
+                        return;
+                    }
+                    FarmHelperFabric.getClientActionQueue().clear();
+                    queueFlyToPlotCenter(targetPlot, 15.0, 280L, runtime.tickCount);
+                }
+                boolean automationIdle = !runtime.automationBusy;
+                if (targetPlot > 0 && runtime.currentPlot == targetPlot && automationIdle) {
+                    setState(State.CHECK_REACHABILITY, runtime.tickCount, true);
+                    return;
+                }
+                if (ticksInState(runtime.tickCount) >= 30L && automationIdle && isQueueEmpty()) {
+                    if (targetPlot > 0 && runtime.currentPlot != targetPlot) {
+                        int retryLimit = Math.max(1, config.pestsDestroyerRetryLimit);
+                        if (stateRetries < retryLimit) {
+                            stateRetries++;
+                            FarmHelperFabric.getWebhookService().debugTrace(
+                                    "feature",
+                                    "pests_destroyer fly-to-plot finished off-target, retry " + stateRetries + "/" + retryLimit
+                                            + " targetPlot=" + targetPlot
+                                            + " currentPlot=" + runtime.currentPlot
+                            );
+                            setState(State.ESCAPE_TO_BARN, runtime.tickCount, false);
+                        } else {
+                            triggerHubEscape(
+                                    runtime,
+                                    "Pests Destroyer: fly-to-plot ended off target for plot " + targetPlot + ", performing hub recovery"
+                            );
+                        }
+                        return;
+                    }
+                    setState(State.CHECK_REACHABILITY, runtime.tickCount, true);
+                    return;
+                }
+                if (ticksInState(runtime.tickCount) >= FLY_TO_PLOT_TIMEOUT_TICKS) {
+                    if (stateRetries < Math.max(1, config.pestsDestroyerRetryLimit)) {
+                        stateRetries++;
+                        FarmHelperFabric.getWebhookService().debugTrace(
+                                "feature",
+                                "pests_destroyer fly-to-plot retry " + stateRetries + "/" + Math.max(1, config.pestsDestroyerRetryLimit)
+                                        + " targetPlot=" + targetPlot
+                        );
+                        setState(State.ESCAPE_TO_BARN, runtime.tickCount, false);
+                    } else {
+                        triggerHubEscape(
+                                runtime,
+                                "Pests Destroyer: could not reach plot " + targetPlot + " from barn, performing hub recovery"
+                        );
+                    }
                 }
             }
             case TRACK_CLUSTER -> {
@@ -434,6 +573,7 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                 if (isEntryTick(runtime.tickCount)) {
                     passCount++;
                     seenKillSignalThisPass = false;
+                    cantReachTicks = 0;
                     nextHuntTick = runtime.tickCount;
                     queueSelectHotbarItem("vacuum", runtime.tickCount);
                     setVacuumUse(runtime.tickCount, true);
@@ -469,9 +609,52 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                 } else if (runtime.tickCount >= nextHuntTick) {
                     nextHuntTick = runtime.tickCount + 6L;
                 }
+                cantReachTicks = updateCantReachTicks(runtime, config, cantReachTicks);
+                if (config.pestsDestroyerCantReachTicks > 0
+                        && cantReachTicks >= config.pestsDestroyerCantReachTicks) {
+                    triggerHubEscape(
+                            runtime,
+                            "Pests Destroyer: pest became unreachable on plot " + targetPlot + ", performing hub recovery"
+                    );
+                    return;
+                }
                 long huntTicks = secondsToTicks(Math.max(4, config.pestsDestroyerActionSeconds));
                 if (ticksInState(runtime.tickCount) >= huntTicks) {
                     setState(State.VERIFY_REMAINING, runtime.tickCount, true);
+                }
+            }
+            case ESCAPE_TO_HUB -> {
+                if (isEntryTick(runtime.tickCount)) {
+                    FarmHelperFabric.getClientActionQueue().clear();
+                    queueCommand("/hub", runtime.tickCount);
+                }
+                setState(State.ESCAPE_WAIT_FOR_HUB, runtime.tickCount, true);
+            }
+            case ESCAPE_WAIT_FOR_HUB -> {
+                if (isLocation(runtime, "HUB")) {
+                    setState(State.ESCAPE_TO_GARDEN, runtime.tickCount, true);
+                    return;
+                }
+                if (ticksInState(runtime.tickCount) >= 140L) {
+                    setState(State.ESCAPE_TO_HUB, runtime.tickCount, false);
+                }
+            }
+            case ESCAPE_TO_GARDEN -> {
+                if (isEntryTick(runtime.tickCount)) {
+                    FarmHelperFabric.getClientActionQueue().clear();
+                    queueCommand("/warp garden", runtime.tickCount);
+                }
+                setState(State.ESCAPE_WAIT_FOR_GARDEN, runtime.tickCount, true);
+            }
+            case ESCAPE_WAIT_FOR_GARDEN -> {
+                if (isGardenLike(runtime)) {
+                    escapeAttempts = 0;
+                    cantReachTicks = 0;
+                    setState(State.CHECK_START_POINT, runtime.tickCount, true);
+                    return;
+                }
+                if (ticksInState(runtime.tickCount) >= 180L) {
+                    setState(State.ESCAPE_TO_GARDEN, runtime.tickCount, false);
                 }
             }
             case VERIFY_REMAINING -> {
@@ -540,6 +723,10 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         if (normalized.contains("cooldown") && (normalized.contains("vacuum") || state == State.HUNT_PESTS)) {
             vacuumCooldownUntilMs = Math.max(vacuumCooldownUntilMs, System.currentTimeMillis() + VACUUM_COOLDOWN_BACKOFF_MS);
         }
+        if (normalized.contains("worm seems to have burrowed")) {
+            cantReachTicks = 0;
+            return;
+        }
         if (!normalized.contains("pest")) {
             return;
         }
@@ -554,9 +741,11 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         } else if (normalized.contains("killed") || normalized.contains("defeated") || normalized.contains("sucked up")) {
             queuedPests = Math.max(0, queuedPests - 1);
             seenKillSignalThisPass = true;
+            cantReachTicks = 0;
         } else if (normalized.contains("vacuumed") || normalized.contains("caught")) {
             queuedPests = Math.max(0, queuedPests - 1);
             seenKillSignalThisPass = true;
+            cantReachTicks = 0;
         } else if (normalized.contains("no pests left") || normalized.contains("there are no pests")) {
             queuedPests = 0;
         } else {
@@ -595,6 +784,9 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         if (resetRetries) {
             stateRetries = 0;
         }
+        if (next != State.HUNT_PESTS) {
+            cantReachTicks = 0;
+        }
     }
 
     private void resetState() {
@@ -608,11 +800,16 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         plotResolveRetries = 0;
         teleportRetries = 0;
         cycleFailures = 0;
+        cantReachTicks = 0;
+        escapeAttempts = 0;
         targetPlot = -1;
         seenKillSignalThisPass = false;
         manualTriggerRequested = false;
         activeVacuumRange = 5.0;
         vacuumUseHeld = false;
+        preTeleportX = 0.0;
+        preTeleportY = 0.0;
+        preTeleportZ = 0.0;
     }
 
     /**
@@ -625,6 +822,80 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
         }
         return runtime.screenTitle.toLowerCase(Locale.ROOT)
                 .contains(titleKeyword.toLowerCase(Locale.ROOT));
+    }
+
+    private int updateCantReachTicks(FeatureRuntimeState runtime, FarmHelperConfig config, int currentTicks) {
+        if (config == null || config.pestsDestroyerCantReachTicks <= 0 || runtime == null) {
+            return 0;
+        }
+        if (seenKillSignalThisPass || runtime.pestsInTablist <= 0) {
+            return 0;
+        }
+        if (ticksInState(runtime.tickCount) < 40L) {
+            return 0;
+        }
+        boolean wrongPlot = targetPlot > 0 && runtime.currentPlot > 0 && runtime.currentPlot != targetPlot;
+        if (wrongPlot) {
+            return 0;
+        }
+        if (!runtime.allowFlying && !runtime.flying) {
+            return 0;
+        }
+        boolean stalled = runtime.stationaryTicks >= 12 || runtime.horizontalSpeedBps < 0.18;
+        boolean activelyHunting = lastVacuumUseTick > 0 && runtime.tickCount - lastVacuumUseTick <= Math.max(24L, resolveVacuumIntervalTicks(runtime, config) * 2L);
+        if (!stalled || !activelyHunting) {
+            return 0;
+        }
+        return currentTicks + 1;
+    }
+
+    private void triggerBarnEscape(FeatureRuntimeState runtime, String reason) {
+        escapeAttempts++;
+        cantReachTicks = 0;
+        teleportRetries = 0;
+        plotResolveRetries = 0;
+        releaseVacuumUse(runtime == null ? 0L : runtime.tickCount);
+        if (reason != null && !reason.isBlank()) {
+            FarmHelperFabric.getWebhookService().sendFeatureLog(reason);
+        }
+        if (escapeAttempts > MAX_ESCAPE_ATTEMPTS) {
+            FarmHelperFabric.getWebhookService().sendFeatureLog(
+                    "Pests Destroyer: exceeded barn recovery attempts, ending cycle"
+            );
+            setState(State.FINISH, runtime == null ? 0L : runtime.tickCount, true);
+            return;
+        }
+        setState(State.ESCAPE_TO_BARN, runtime == null ? 0L : runtime.tickCount, true);
+    }
+
+    private void triggerHubEscape(FeatureRuntimeState runtime, String reason) {
+        escapeAttempts++;
+        cantReachTicks = 0;
+        teleportRetries = 0;
+        plotResolveRetries = 0;
+        releaseVacuumUse(runtime == null ? 0L : runtime.tickCount);
+        if (reason != null && !reason.isBlank()) {
+            FarmHelperFabric.getWebhookService().sendFeatureLog(reason);
+        }
+        if (escapeAttempts > MAX_ESCAPE_ATTEMPTS) {
+            FarmHelperFabric.getWebhookService().sendFeatureLog(
+                    "Pests Destroyer: exceeded hub recovery attempts, ending cycle"
+            );
+            setState(State.FINISH, runtime == null ? 0L : runtime.tickCount, true);
+            return;
+        }
+        setState(State.ESCAPE_TO_HUB, runtime == null ? 0L : runtime.tickCount, true);
+    }
+
+    private boolean isLocation(FeatureRuntimeState runtime, String expected) {
+        if (runtime == null || runtime.location == null) {
+            return false;
+        }
+        return runtime.location.equalsIgnoreCase(expected);
+    }
+
+    private boolean isGardenLike(FeatureRuntimeState runtime) {
+        return isLocation(runtime, "GARDEN") || isLocation(runtime, "BARN");
     }
 
     /** Checks whether the action queue has no pending actions. */
@@ -673,6 +944,21 @@ public class PestsDestroyerFeatureModule extends MacroExclusiveFeatureModule {
                 : Math.max(4L, Math.round(Math.max(0.2, runtime.vacuumTrackerCooldownSeconds) * 20.0));
         long persistDriven = Math.max(12L, configuredTrackPersist / 2L);
         return Math.max(12L, Math.max(persistDriven, trackerCooldownTicks));
+    }
+
+    /**
+     * Checks if the player's position has changed significantly from the pre-teleport position,
+     * indicating a teleport occurred even if plot detection didn't recognize the new plot
+     * (e.g. on an empty plot with no ground).
+     */
+    private boolean hasTeleportedByPosition(FeatureRuntimeState runtime) {
+        double dx = runtime.posX - preTeleportX;
+        double dy = runtime.posY - preTeleportY;
+        double dz = runtime.posZ - preTeleportZ;
+        double distSq = dx * dx + dy * dy + dz * dz;
+        // If the player moved more than 10 blocks from where they were before /plottp,
+        // consider the teleport successful.
+        return distSq > 100.0;  // 10 * 10
     }
 
     private void setVacuumUse(long tick, boolean enabled) {

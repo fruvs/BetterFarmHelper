@@ -48,6 +48,11 @@ public class TeleportDetector implements FailsafeDetector {
             clearPersistence();
             return Optional.empty();
         }
+        if (snapshot.movementRecordingPlaying) {
+            clearPending();
+            clearPersistence();
+            return Optional.empty();
+        }
         if (hasPersistenceCheck()) {
             Optional<String> persistentResult = evaluatePersistence(snapshot, config);
             if (persistentResult.isPresent()) {

@@ -6,7 +6,7 @@ import net.minecraft.text.Text;
 
 /**
  * Legacy entrypoint kept for compatibility with older call sites.
- * It now delegates directly to the consolidated YACL configuration screen.
+ * It delegates directly to the modern configuration screen.
  */
 public class FarmHelperConfigScreen extends Screen {
     private final Screen parent;
@@ -19,13 +19,13 @@ public class FarmHelperConfigScreen extends Screen {
 
     @Override
     protected void init() {
-        delegateToYacl();
+        delegateToModern();
     }
 
     @Override
     public void tick() {
         if (!delegated) {
-            delegateToYacl();
+            delegateToModern();
         }
     }
 
@@ -34,11 +34,11 @@ public class FarmHelperConfigScreen extends Screen {
         renderBackground(context, mouseX, mouseY, delta);
     }
 
-    private void delegateToYacl() {
+    private void delegateToModern() {
         if (delegated || client == null) {
             return;
         }
         delegated = true;
-        client.setScreen(FarmHelperYaclScreen.create(parent));
+        client.setScreen(new FarmHelperModernConfigScreen(parent));
     }
 }

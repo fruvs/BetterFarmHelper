@@ -49,6 +49,12 @@ public class ClientAutomationExecutor {
     private static final float PEST_DEADZONE_PITCH_FALLBACK = 3.0f;
     private static final long RETRY_INTERVAL_TICKS = 12L;
     private static final long DEBUG_THINK_INTERVAL_TICKS = 8L;
+    private static final long FLY_PATH_PROGRESS_SAMPLE_TICKS = 12L;
+    private static final int FLY_PATH_STALL_SAMPLES = 2;
+    /** Altitude to cruise at when flying between barn and plots to clear all buildings. */
+    private static final double PLOT_FLIGHT_CRUISE_Y = 160.0;
+    /** Vertical tolerance for phase transitions during plot flight. */
+    private static final double PLOT_FLIGHT_Y_TOLERANCE = 3.0;
     private static final Set<String> PEST_QUERY_TOKENS = Set.of(
             "beetle", "cricket", "earthworm", "fly", "locust", "mite",
             "mosquito", "moth", "rat", "slug", "praying mantis", "firefly", "dragonfly", "pest", "pests"
@@ -83,6 +89,10 @@ public class ClientAutomationExecutor {
 
     public boolean isBusy() {
         return activeAction != null;
+    }
+
+    public boolean isMovementRecordingPlaying() {
+        return movementRecordingPlayer.isPlaying();
     }
 
     public void cancelAll(MinecraftClient client, String reason) {
@@ -123,12 +133,15 @@ public class ClientAutomationExecutor {
         boolean completed = switch (activeAction.action.type()) {
             case MOVE_TO_POS -> tickMoveToPos(client, activeAction, nowTick);
             case MOVE_TO_ENTITY -> tickMoveToEntity(client, activeAction, nowTick);
+            case FLY_TO_POS -> tickFlyToPos(client, activeAction, nowTick);
+            case FLY_TO_PLOT_CENTER -> tickFlyToPlotCenter(client, activeAction, nowTick);
             case FLY_TO_ENTITY -> tickFlyToEntity(client, activeAction, nowTick);
             case INTERACT_NEAREST_ENTITY -> tickEntityInteraction(client, activeAction, nowTick, false);
             case ATTACK_NEAREST_ENTITY -> tickEntityInteraction(client, activeAction, nowTick, true);
             case WAIT_FOR_SCREEN -> tickWaitForScreen(client, activeAction, nowTick);
             case CLICK_SLOT_MATCHING -> tickClickSlotMatching(client, activeAction, nowTick);
             case MINE_NEAREST_BLOCK -> tickMineNearestBlock(client, activeAction, nowTick);
+            case ROTATE_TO -> tickRotateTo(client, activeAction, nowTick);
             default -> true;
         };
 
@@ -171,9 +184,14 @@ public class ClientAutomationExecutor {
             case SET_USE_KEY -> applyUseKeyHold(client, Boolean.parseBoolean(action.payload()));
             case TAP_ATTACK_KEY -> KeyBindUtils.leftClick(client);
             case REQUEST_WINDOW_ATTENTION -> requestWindowAttention(action.payload());
+            case ROTATE_TO -> {
+                long timeout = parseTimeoutTicks(action.type(), action.payload(), 30L);
+                activeAction = new ActiveAction(action, nowTick, nowTick + timeout, 0);
+                navigationState = null;
+            }
             case PLAY_MOVEMENT_RECORDING -> playMovementRecording(client, action.payload());
             case STOP_MOVEMENT_RECORDING -> movementRecordingPlayer.stop(client);
-            case CLICK_SLOT_MATCHING, MOVE_TO_POS, MOVE_TO_ENTITY, FLY_TO_ENTITY, INTERACT_NEAREST_ENTITY, ATTACK_NEAREST_ENTITY, WAIT_FOR_SCREEN, MINE_NEAREST_BLOCK -> {
+            case CLICK_SLOT_MATCHING, MOVE_TO_POS, MOVE_TO_ENTITY, FLY_TO_POS, FLY_TO_PLOT_CENTER, FLY_TO_ENTITY, INTERACT_NEAREST_ENTITY, ATTACK_NEAREST_ENTITY, WAIT_FOR_SCREEN, MINE_NEAREST_BLOCK -> {
                 long timeout = parseTimeoutTicks(action.type(), action.payload(), DEFAULT_TIMEOUT_TICKS);
                 int maxRetries = parseRetries(action.type(), action.payload(), DEFAULT_RETRIES);
                 activeAction = new ActiveAction(action, nowTick, nowTick + timeout, maxRetries);
@@ -211,6 +229,16 @@ public class ClientAutomationExecutor {
         }
         String query = payload == null ? "" : payload.trim().toLowerCase(Locale.ROOT);
         if (query.isEmpty()) {
+            return;
+        }
+        if (query.startsWith("slot:")) {
+            try {
+                int slot = Integer.parseInt(query.substring("slot:".length()).trim());
+                if (slot >= 0 && slot < 9) {
+                    client.player.getInventory().setSelectedSlot(slot);
+                }
+            } catch (NumberFormatException ignored) {
+            }
             return;
         }
         int slot = findHotbarSlot(client, query);
@@ -342,6 +370,99 @@ public class ClientAutomationExecutor {
             renderPestTargetMarker(nearest, "Track");
         }
         return navigateTowards(client, action, entityPos(nearest), radius, nowTick);
+    }
+
+    private boolean tickFlyToPos(MinecraftClient client, ActiveAction action, long nowTick) {
+        List<String> parts = split(action.action.payload());
+        if (parts.size() < 3) {
+            return true;
+        }
+        double x = parseDouble(parts, 0, client.player.getX());
+        double y = parseDouble(parts, 1, client.player.getY());
+        double z = parseDouble(parts, 2, client.player.getZ());
+        double tolerance = parts.size() >= 4 ? parseDouble(parts, 3, DEFAULT_STOP_DISTANCE) : DEFAULT_STOP_DISTANCE;
+        return flyOrPathTowards(client, action, new Vec3d(x, y, z), tolerance, nowTick);
+    }
+
+    private boolean tickFlyToPlotCenter(MinecraftClient client, ActiveAction action, long nowTick) {
+        List<String> parts = split(action.action.payload());
+        if (parts.isEmpty()) {
+            return true;
+        }
+        int plotNumber;
+        try {
+            plotNumber = Integer.parseInt(parts.getFirst());
+        } catch (NumberFormatException ignored) {
+            return true;
+        }
+        if (plotNumber < 0) {
+            return true;
+        }
+        double tolerance = parts.size() >= 2 ? parseDouble(parts, 1, 15.0) : 15.0;
+        BlockPos center = PlotUtils.getPlotCenter(plotNumber);
+        double targetX = center.getX() + 0.5;
+        double targetZ = center.getZ() + 0.5;
+        double targetY = Math.max(80.0, center.getY());
+        Vec3d player = playerPos(client);
+
+        // Ensure player is flying before attempting any phase.
+        ensureFlying(client);
+
+        // Multi-phase flight: ascend → cruise → descend.
+        // This avoids flying at y=80 straight into buildings between barn and plots.
+        switch (action.plotFlightPhase) {
+            case 0: // ASCEND — fly straight up to cruise altitude
+                if (player.y >= PLOT_FLIGHT_CRUISE_Y - PLOT_FLIGHT_Y_TOLERANCE) {
+                    action.plotFlightPhase = 1;
+                    resetFlyStallTracking(action, nowTick);
+                    debugThink(action, nowTick, "plot flight: ascend complete at y=" + String.format(Locale.US, "%.1f", player.y) + ", cruising to plot " + plotNumber);
+                    // Fall through to cruise phase immediately.
+                } else {
+                    // Fly straight up. Target is directly above the player at cruise altitude.
+                    Vec3d ascendTarget = new Vec3d(player.x, PLOT_FLIGHT_CRUISE_Y, player.z);
+                    return flyTowards(client, ascendTarget, 2.0, action, nowTick, false);
+                }
+                // intentional fall-through when phase just advanced
+            case 1: // CRUISE — fly horizontally at cruise altitude to above plot center
+                double horizontalDist = Math.sqrt(
+                        (targetX - player.x) * (targetX - player.x) + (targetZ - player.z) * (targetZ - player.z)
+                );
+                if (horizontalDist <= tolerance) {
+                    action.plotFlightPhase = 2;
+                    resetFlyStallTracking(action, nowTick);
+                    debugThink(action, nowTick, "plot flight: cruise complete above plot " + plotNumber + ", descending");
+                    // Fall through to descend phase immediately.
+                } else {
+                    // Fly horizontally at cruise altitude. Keep Y high to stay above buildings.
+                    Vec3d cruiseTarget = new Vec3d(targetX, PLOT_FLIGHT_CRUISE_Y, targetZ);
+                    // If we detect a horizontal stall during cruise, bump up further rather than
+                    // falling back to the ground pathfinder (which can't handle flying).
+                    if (client.player.horizontalCollision && player.y < PLOT_FLIGHT_CRUISE_Y + 10) {
+                        cruiseTarget = new Vec3d(targetX, PLOT_FLIGHT_CRUISE_Y + 15, targetZ);
+                    }
+                    return flyTowards(client, cruiseTarget, tolerance, action, nowTick, false);
+                }
+                // intentional fall-through when phase just advanced
+            case 2: // DESCEND — fly down to the target Y at plot center
+                Vec3d finalTarget = new Vec3d(targetX, targetY, targetZ);
+                return flyTowards(client, finalTarget, tolerance, action, nowTick, false);
+            default:
+                action.plotFlightPhase = 0;
+                return false;
+        }
+    }
+
+    private void ensureFlying(MinecraftClient client) {
+        if (client.player != null && client.player.getAbilities().allowFlying && !client.player.getAbilities().flying) {
+            client.player.getAbilities().flying = true;
+            client.player.sendAbilitiesUpdate();
+        }
+    }
+
+    private void resetFlyStallTracking(ActiveAction action, long nowTick) {
+        action.flyLastProgressPos = null;
+        action.flyLastProgressTick = nowTick;
+        action.flyStallSamples = 0;
     }
 
     private boolean tickFlyToEntity(MinecraftClient client, ActiveAction action, long nowTick) {
@@ -531,6 +652,29 @@ public class ClientAutomationExecutor {
             action.miningTarget = null;
         }
         return false;
+    }
+
+    private boolean tickRotateTo(MinecraftClient client, ActiveAction action, long nowTick) {
+        List<String> parts = split(action.action.payload());
+        if (parts.size() < 2 || client.player == null) {
+            return true;
+        }
+
+        float targetYaw = (float) parseDouble(parts, 0, client.player.getYaw());
+        float targetPitch = (float) parseDouble(parts, 1, client.player.getPitch());
+        long durationTicks = parts.size() >= 3 ? Math.max(1L, Math.round(parseDouble(parts, 2, 12.0))) : 12L;
+        long elapsed = Math.max(1L, nowTick - action.startTick + 1L);
+        long remaining = Math.max(1L, durationTicks - elapsed + 1L);
+        float yawDelta = Math.abs(MathHelper.wrapDegrees(targetYaw - client.player.getYaw()));
+        float pitchDelta = Math.abs(MathHelper.wrapDegrees(targetPitch - client.player.getPitch()));
+        float yawStep = Math.max(3.5f, yawDelta / remaining);
+        float pitchStep = Math.max(2.5f, pitchDelta / remaining);
+
+        client.player.setYaw(approachAngle(client.player.getYaw(), targetYaw, yawStep));
+        client.player.setPitch(MathHelper.clamp(approach(client.player.getPitch(), targetPitch, pitchStep), -90f, 90f));
+
+        return Math.abs(MathHelper.wrapDegrees(targetYaw - client.player.getYaw())) <= 1.5f
+                && Math.abs(MathHelper.wrapDegrees(targetPitch - client.player.getPitch())) <= 1.5f;
     }
 
     private boolean isValidMiningTarget(MinecraftClient client, BlockPos pos, List<String> hints, double radius) {
@@ -773,13 +917,33 @@ public class ClientAutomationExecutor {
         return false;
     }
 
+    private boolean flyOrPathTowards(MinecraftClient client, ActiveAction action, Vec3d target, double stopDistance, long nowTick) {
+        boolean canFly = client.player != null
+                && (client.player.getAbilities().allowFlying || client.player.getAbilities().flying);
+        if (shouldFallbackFlyActionToPath(client, action, nowTick)) {
+            if (canFly && client.player.horizontalCollision) {
+                // When flying and hitting a wall, try ascending instead of falling back to
+                // a ground-level pathfinder that cannot navigate 3D airspace.
+                debugThink(action, nowTick, "fly stalled on collision, ascending to clear obstacle");
+                Vec3d liftedTarget = new Vec3d(target.x, Math.max(target.y, client.player.getY() + 12.0), target.z);
+                resetFlyStallTracking(action, nowTick);
+                return flyTowards(client, liftedTarget, stopDistance, action, nowTick, false);
+            }
+            debugThink(action, nowTick, "fly action stalled, switching to path navigation");
+            return navigateTowards(client, action, target, stopDistance, nowTick);
+        }
+        return flyTowards(client, target, stopDistance, action, nowTick, false);
+    }
+
     private boolean flyTowards(MinecraftClient client, Vec3d target, double stopDistance, ActiveAction action, long nowTick, boolean pestMode) {
         Vec3d player = playerPos(client);
         double dx = target.x - player.x;
         double dy = target.y - player.y;
         double dz = target.z - player.z;
         double horizontalDistance = Math.sqrt(dx * dx + dz * dz);
-        if (horizontalDistance <= Math.max(0.5, stopDistance)) {
+        double verticalDistance = Math.abs(dy);
+        // Consider reached only when both horizontally AND vertically close.
+        if (horizontalDistance <= Math.max(0.5, stopDistance) && verticalDistance <= Math.max(2.0, stopDistance)) {
             stopMovement(client);
             return true;
         }
@@ -796,8 +960,10 @@ public class ClientAutomationExecutor {
         client.options.leftKey.setPressed(false);
         client.options.rightKey.setPressed(false);
         client.options.backKey.setPressed(false);
-        client.options.jumpKey.setPressed(canFly ? dy > 0.6 : (client.player.horizontalCollision || dy > 1.0));
-        client.options.sneakKey.setPressed(canFly && dy < -0.8);
+        // When flying: go up if target is above OR if hitting a wall (fly over obstacles).
+        // When walking: jump if hitting a wall or target is above.
+        client.options.jumpKey.setPressed(canFly ? (dy > 0.6 || client.player.horizontalCollision) : (client.player.horizontalCollision || dy > 1.0));
+        client.options.sneakKey.setPressed(canFly && dy < -0.8 && !client.player.horizontalCollision);
         if (isDebugModeEnabled()) {
             RenderUtils.drawTracer(target, 0xFF9FE2FF, 4L);
         }
@@ -806,6 +972,40 @@ public class ClientAutomationExecutor {
             return retryOrFinish(action, nowTick);
         }
         return false;
+    }
+
+    private boolean shouldFallbackFlyActionToPath(MinecraftClient client, ActiveAction action, long nowTick) {
+        if (client == null || client.player == null || client.world == null || action == null) {
+            return true;
+        }
+        boolean canFly = client.player.getAbilities().allowFlying || client.player.getAbilities().flying;
+        if (!canFly) {
+            return true;
+        }
+
+        Vec3d currentPos = playerPos(client);
+        if (action.flyLastProgressPos == null) {
+            action.flyLastProgressPos = currentPos;
+            action.flyLastProgressTick = nowTick;
+            action.flyStallSamples = 0;
+            return false;
+        }
+        if (nowTick - action.flyLastProgressTick < FLY_PATH_PROGRESS_SAMPLE_TICKS) {
+            return action.flyStallSamples >= FLY_PATH_STALL_SAMPLES;
+        }
+
+        double moved = currentPos.distanceTo(action.flyLastProgressPos);
+        boolean blockedAbove = !client.world.isSpaceEmpty(client.player, client.player.getBoundingBox().offset(0.0, 1.0, 0.0));
+        boolean stalled = moved < 0.35
+                && (client.player.horizontalCollision || client.player.isOnGround() || blockedAbove);
+        action.flyLastProgressPos = currentPos;
+        action.flyLastProgressTick = nowTick;
+        if (stalled) {
+            action.flyStallSamples++;
+        } else {
+            action.flyStallSamples = 0;
+        }
+        return action.flyStallSamples >= FLY_PATH_STALL_SAMPLES;
     }
 
     private boolean isStuck(Vec3d currentPos, long nowTick) {
@@ -1135,7 +1335,7 @@ public class ClientAutomationExecutor {
 
     private boolean requiresActiveProcessing(ClientActionQueue.ActionType type) {
         return switch (type) {
-            case MOVE_TO_POS, MOVE_TO_ENTITY, FLY_TO_ENTITY, INTERACT_NEAREST_ENTITY, ATTACK_NEAREST_ENTITY, WAIT_FOR_SCREEN, CLICK_SLOT_MATCHING, MINE_NEAREST_BLOCK -> true;
+            case MOVE_TO_POS, MOVE_TO_ENTITY, FLY_TO_POS, FLY_TO_PLOT_CENTER, FLY_TO_ENTITY, INTERACT_NEAREST_ENTITY, ATTACK_NEAREST_ENTITY, WAIT_FOR_SCREEN, CLICK_SLOT_MATCHING, MINE_NEAREST_BLOCK, ROTATE_TO -> true;
             default -> false;
         };
     }
@@ -1147,6 +1347,7 @@ public class ClientAutomationExecutor {
         }
         String candidate = switch (type) {
             case WAIT_FOR_SCREEN, CLICK_SLOT_MATCHING -> parts.size() >= 2 ? parts.get(1) : parts.getLast();
+            case ROTATE_TO -> parts.size() >= 4 ? parts.get(3) : parts.getLast();
             default -> parts.getLast();
         };
         try {
@@ -1219,7 +1420,7 @@ public class ClientAutomationExecutor {
 
     private boolean shouldSuppressRotationForAction(ClientActionQueue.ActionType type) {
         return switch (type) {
-            case MOVE_TO_POS, MOVE_TO_ENTITY, FLY_TO_ENTITY, INTERACT_NEAREST_ENTITY, ATTACK_NEAREST_ENTITY, MINE_NEAREST_BLOCK -> true;
+            case MOVE_TO_POS, MOVE_TO_ENTITY, FLY_TO_POS, FLY_TO_PLOT_CENTER, FLY_TO_ENTITY, INTERACT_NEAREST_ENTITY, ATTACK_NEAREST_ENTITY, MINE_NEAREST_BLOCK, ROTATE_TO -> true;
             default -> false;
         };
     }
@@ -1284,6 +1485,10 @@ public class ClientAutomationExecutor {
         private Vec3d pestSmoothedTarget;
         private int pestSearchWaypointIndex;
         private long pestSearchLastAdvanceTick;
+        private Vec3d flyLastProgressPos;
+        private long flyLastProgressTick;
+        private int flyStallSamples;
+        private int plotFlightPhase;  // 0=ascend, 1=cruise, 2=descend
         private long lastThinkLogTick;
 
         private ActiveAction(ClientActionQueue.Action action, long startTick, long timeoutTick, int maxRetries) {
@@ -1305,6 +1510,10 @@ public class ClientAutomationExecutor {
             this.pestSmoothedTarget = null;
             this.pestSearchWaypointIndex = 0;
             this.pestSearchLastAdvanceTick = startTick;
+            this.flyLastProgressPos = null;
+            this.flyLastProgressTick = startTick;
+            this.flyStallSamples = 0;
+            this.plotFlightPhase = 0;
             this.lastThinkLogTick = startTick - DEBUG_THINK_INTERVAL_TICKS;
         }
     }

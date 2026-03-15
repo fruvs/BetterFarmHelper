@@ -244,6 +244,14 @@ public class ConfigManager {
         if (loaded.visitorsMacroWhitelistCsv == null) {
             loaded.visitorsMacroWhitelistCsv = "";
         }
+        if (loaded.nameFilter == null) {
+            loaded.nameFilter = "Librarian|Maeve|Spaceman";
+        }
+        loaded.visitorsActionUncommon = Math.max(0, Math.min(3, loaded.visitorsActionUncommon));
+        loaded.visitorsActionRare = Math.max(0, Math.min(3, loaded.visitorsActionRare));
+        loaded.visitorsActionLegendary = Math.max(0, Math.min(3, loaded.visitorsActionLegendary));
+        loaded.visitorsActionMythic = Math.max(0, Math.min(3, loaded.visitorsActionMythic));
+        loaded.visitorsActionSpecial = Math.max(0, Math.min(3, loaded.visitorsActionSpecial));
         if (loaded.pestsDestroyerActionSeconds <= 0) {
             loaded.pestsDestroyerActionSeconds = 15;
         }
@@ -252,6 +260,10 @@ public class ConfigManager {
         }
         if (loaded.pestsDestroyerRetryLimit <= 0) {
             loaded.pestsDestroyerRetryLimit = 3;
+        }
+        loaded.pestsDestroyerCantReachTicks = Math.max(0, loaded.pestsDestroyerCantReachTicks);
+        if (loaded.pestsDestroyerCantReachTicks > 0) {
+            loaded.pestsDestroyerCantReachTicks = Math.max(20, Math.min(400, loaded.pestsDestroyerCantReachTicks));
         }
         if (loaded.schemaVersion < 10) {
             loaded.pestsDestroyerDisableDuringJacobsContest = true;

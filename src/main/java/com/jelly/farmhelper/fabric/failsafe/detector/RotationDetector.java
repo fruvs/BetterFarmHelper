@@ -31,6 +31,10 @@ public class RotationDetector implements FailsafeDetector {
             clearPending();
             return Optional.empty();
         }
+        if (snapshot.movementRecordingPlaying) {
+            clearPending();
+            return Optional.empty();
+        }
         if (config.enablePacketFailsafeChecks) {
             if (state.packetRotationSuppressed || state.packetTeleportSuppressed || snapshot.networkLagging || snapshot.screenOpen) {
                 clearPending();

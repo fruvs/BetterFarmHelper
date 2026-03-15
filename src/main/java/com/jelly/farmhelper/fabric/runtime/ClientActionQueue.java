@@ -17,6 +17,8 @@ public class ClientActionQueue {
         CHAT_MESSAGE,
         MOVE_TO_POS,
         MOVE_TO_ENTITY,
+        FLY_TO_POS,
+        FLY_TO_PLOT_CENTER,
         FLY_TO_ENTITY,
         INTERACT_NEAREST_ENTITY,
         ATTACK_NEAREST_ENTITY,
@@ -33,6 +35,7 @@ public class ClientActionQueue {
         SET_USE_KEY,
         TAP_ATTACK_KEY,
         REQUEST_WINDOW_ATTENTION,
+        ROTATE_TO,
         PLAY_MOVEMENT_RECORDING,
         STOP_MOVEMENT_RECORDING
     }
@@ -79,6 +82,22 @@ public class ClientActionQueue {
         enqueue(
                 ActionType.MOVE_TO_ENTITY,
                 namesCsv + "|" + radius + "|" + Math.max(1L, timeoutTicks),
+                tick
+        );
+    }
+
+    public void enqueueFlyToPos(double x, double y, double z, double tolerance, long timeoutTicks, long tick) {
+        enqueue(
+                ActionType.FLY_TO_POS,
+                x + "|" + y + "|" + z + "|" + tolerance + "|" + Math.max(1L, timeoutTicks),
+                tick
+        );
+    }
+
+    public void enqueueFlyToPlotCenter(int plotNumber, double tolerance, long timeoutTicks, long tick) {
+        enqueue(
+                ActionType.FLY_TO_PLOT_CENTER,
+                plotNumber + "|" + tolerance + "|" + Math.max(1L, timeoutTicks),
                 tick
         );
     }
@@ -174,6 +193,12 @@ public class ClientActionQueue {
     public void enqueueRequestWindowAttention(String reason, long tick) {
         String payload = reason == null || reason.isBlank() ? "failsafe" : reason.trim();
         enqueue(ActionType.REQUEST_WINDOW_ATTENTION, payload, tick);
+    }
+
+    public void enqueueRotateTo(float yaw, float pitch, long durationTicks, long tick) {
+        long duration = Math.max(1L, durationTicks);
+        long timeout = duration + 20L;
+        enqueue(ActionType.ROTATE_TO, yaw + "|" + pitch + "|" + duration + "|" + timeout, tick);
     }
 
     public void enqueuePlayMovementRecording(String pattern, long tick) {
